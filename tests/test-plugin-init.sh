@@ -28,6 +28,15 @@ for option in window-status-format window-status-current-format; do
 done
 pass "both window formats render pane-ordered agent state"
 
+pane="$(T display-message -p -t t '#{pane_id}')"
+T set-option -p -t "$pane" @agent_icon '✳'
+T set-option -p -t "$pane" @agent_color 173
+rendered="$(T display-message -p -t t '#{T:window-status-current-format}')"
+case "$rendered" in
+  *'✳'*) pass "newly discovered agent renders busy before its first state event" ;;
+  *) fail "newly discovered agent did not render: $rendered" ;;
+esac
+
 TMUX="$(T display-message -p '#{socket_path}'),0,0" "$PLUGIN"
 for option in window-status-format window-status-current-format; do
   format="$(T show-option -gwqv "$option")"

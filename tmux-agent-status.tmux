@@ -5,7 +5,7 @@ CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tmux set-option -g @agent_status_plugin_dir "$CURRENT_DIR"
 
 pane_loop='P/i'
-case "$(tmux display-message -p '#{P/i:x}' 2>/dev/null)" in
+case "$(tmux display-message -p '#{P/i:#{pane_id}}' 2>/dev/null)" in
   P/i:*) pane_loop='P' ;;
 esac
 agent_body='#{?@agent_icon,#{?#{==:#{@agent_ready},1},#{?@agent_color,#[fg=colour#{@agent_color}],#[fg=colour114]}#[bold] #{@agent_icon},#{?#{@agent_pulse},#[fg=colour#{@agent_pulse}],#[fg=colour238]}#[nobold] #{@agent_icon}},}'

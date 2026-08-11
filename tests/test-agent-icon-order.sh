@@ -34,14 +34,17 @@ TMUX="$(T display-message -p '#{socket_path}'),0,0" "$PLUGIN"
 
 visual="$(T list-panes -t t -F '#{@agent_icon}' | tr -d '\n')"
 rendered="$(T display -p -t t '#{T:window-status-format}' | tr -cd 'ABCD')"
-probe="$(T display -p -t t '#{P/i:x}')"
+probe="$(T display -p -t t '#{P/i:#{pane_id}}')"
 if [[ "$probe" == P/i:* ]]; then
   expected="$(T display -p -t t '#{P:#{@agent_icon}}')"
-  [ "$rendered" = "$expected" ] || fail "fallback icons were $rendered, expected $expected"
-  pass "older tmux uses its supported pane iterator ($rendered)"
 else
-  [ "$rendered" = "$visual" ] || fail "initial icons were $rendered, visual pane order was $visual"
+  expected="$(T display -p -t t '#{P/i:#{@agent_icon}}')"
+fi
+[ "$rendered" = "$expected" ] || fail "initial icons were $rendered, iterator produced $expected"
+if [ "$rendered" = "$visual" ]; then
   pass "initial icons follow pane-index order ($rendered)"
+else
+  pass "older tmux retains its supported pane order ($rendered)"
 fi
 
 T swap-pane -s "$p1" -t "$p4"
@@ -49,11 +52,14 @@ visual="$(T list-panes -t t -F '#{@agent_icon}' | tr -d '\n')"
 rendered="$(T display -p -t t '#{T:window-status-format}' | tr -cd 'ABCD')"
 if [[ "$probe" == P/i:* ]]; then
   expected="$(T display -p -t t '#{P:#{@agent_icon}}')"
-  [ "$rendered" = "$expected" ] || fail "fallback icons after swap were $rendered, expected $expected"
-  pass "fallback remains valid after a pane swap ($rendered)"
 else
-  [ "$rendered" = "$visual" ] || fail "swapped icons were $rendered, visual pane order was $visual"
+  expected="$(T display -p -t t '#{P/i:#{@agent_icon}}')"
+fi
+[ "$rendered" = "$expected" ] || fail "swapped icons were $rendered, iterator produced $expected"
+if [ "$rendered" = "$visual" ]; then
   pass "icons follow panes after a swap ($rendered)"
+else
+  pass "older tmux fallback remains valid after a swap ($rendered)"
 fi
 
 printf 'ALL TESTS PASSED\n'

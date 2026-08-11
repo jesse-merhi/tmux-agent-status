@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Verify agent icons follow current pane indexes rather than pane creation order.
+set -euo pipefail
+
+SOCK="agent-icon-order-test-$$"
+PLUGIN="$(cd "$(dirname "$0")/.." && pwd)/tmux-agent-status.tmux"
+
+T() { command tmux -L "$SOCK" "$@"; }
+
+cleanup() {
+  T kill-server 2>/dev/null || true
+}
+trap cleanup EXIT
+
+fail() {
+  printf 'FAIL: %s\n' "$1" >&2
+  exit 1
+}
+pass() { printf 'ok: %s\n' "$1"; }
+
+T -f /dev/null new-session -d -s t -x 120 -y 40
+p1="$(T display -p -t t '#{pane_id}')"
+p2="$(T split-window -h -P -F '#{pane_id}' -t t)"
+p3="$(T split-window -v -P -F '#{pane_id}' -t "$p1")"
+p4="$(T split-window -v -P -F '#{pane_id}' -t "$p2")"
+T select-layout -t t tiled >/dev/null
+
+T set-option -p -t "$p1" @agent_icon A
+T set-option -p -t "$p2" @agent_icon B
+T set-option -p -t "$p3" @agent_icon C
+T set-option -p -t "$p4" @agent_icon D
+T set-option -g @agent_status_start off
+TMUX="$(T display-message -p '#{socket_path}'),0,0" "$PLUGIN"
+
+visual="$(T list-panes -t t -F '#{@agent_icon}' | tr -d '\n')"
+rendered="$(T display -p -t t '#{T:window-status-format}' | tr -cd 'ABCD')"
+probe="$(T display -p -t t '#{P/i:#{pane_id}}')"
+if [[ "$probe" == P/i:* ]]; then
+  expected="$(T display -p -t t '#{P:#{@agent_icon}}')"
+else
+  expected="$(T display -p -t t '#{P/i:#{@agent_icon}}')"
+fi
+[ "$rendered" = "$expected" ] || fail "initial icons were $rendered, iterator produced $expected"
+if [ "$rendered" = "$visual" ]; then
+  pass "initial icons follow pane-index order ($rendered)"
+else
+  pass "older tmux retains its supported pane order ($rendered)"
+fi
+
+T swap-pane -s "$p1" -t "$p4"
+visual="$(T list-panes -t t -F '#{@agent_icon}' | tr -d '\n')"
+rendered="$(T display -p -t t '#{T:window-status-format}' | tr -cd 'ABCD')"
+if [[ "$probe" == P/i:* ]]; then
+  expected="$(T display -p -t t '#{P:#{@agent_icon}}')"
+else
+  expected="$(T display -p -t t '#{P/i:#{@agent_icon}}')"
+fi
+[ "$rendered" = "$expected" ] || fail "swapped icons were $rendered, iterator produced $expected"
+if [ "$rendered" = "$visual" ]; then
+  pass "icons follow panes after a swap ($rendered)"
+else
+  pass "older tmux fallback remains valid after a swap ($rendered)"
+fi
+
+printf 'ALL TESTS PASSED\n'

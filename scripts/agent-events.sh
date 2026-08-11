@@ -187,7 +187,15 @@ forget_pane() {
 }
 
 in_hook_grace() { # pane — agent-attention.sh hooks win for HOOK_GRACE secs
-  local ts="${hook_ts[$1]:-0}"
+  local pane="$1" ts="${hook_ts[$1]:-0}" live
+  # A pane can emit output before tmux delivers the once-per-second hook
+  # subscription. Read the authoritative option before a state flip so a
+  # fresh lifecycle hook cannot lose that race.
+  live="$(tmx display -p -t "$pane" '#{@agent_state_ts}' 2>/dev/null)"
+  if [[ "$live" =~ ^[0-9]+$ ]] && { [[ ! "$ts" =~ ^[0-9]+$ ]] || [ "$live" -gt "$ts" ]; }; then
+    ts="$live"
+    hook_ts[$pane]="$live"
+  fi
   [ "$ts" -gt 0 ] 2>/dev/null && [ $(($(date +%s) - ts)) -lt "$HOOK_GRACE" ]
 }
 

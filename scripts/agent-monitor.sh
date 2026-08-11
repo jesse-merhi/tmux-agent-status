@@ -61,6 +61,17 @@ integer_option() {
   esac
 }
 
+expand_home_path() {
+  # These are literal prefixes accepted from tmux options, not shell paths.
+  # shellcheck disable=SC2016,SC2088
+  local home_prefix='$HOME/' tilde_prefix='~/'
+  case "$1" in
+    "$home_prefix"*) printf '%s/%s' "$HOME" "${1#"$home_prefix"}" ;;
+    "$tilde_prefix"*) printf '%s/%s' "$HOME" "${1#"$tilde_prefix"}" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
 # 0.22s frames: with many busy agents the tmux server spends 40%+ of a
 # core parsing their output, and each pulse frame is one server round
 # trip that queues behind that parsing (measured 50-250ms). At 8fps the
@@ -102,8 +113,8 @@ READY_AGE=5
 BUSY_RUNS=2
 STALE_HOOK_SECS=60
 NAME_MAX=28
-label_script="$(tmux_option @agent_status_label_command)"
-codex_db="$(option_or_default @agent_status_codex_db "${CODEX_HOME:-$HOME/.codex}/state_5.sqlite")"
+label_script="$(expand_home_path "$(tmux_option @agent_status_label_command)")"
+codex_db="$(expand_home_path "$(option_or_default @agent_status_codex_db "${CODEX_HOME:-$HOME/.codex}/state_5.sqlite")")"
 
 # pane-label.sh keyword-bucket outputs: too vague to be a window name.
 GENERIC_TITLES='^(setup|cleanup|deploy|review|code review|testing|remote access|remote desktop)$'

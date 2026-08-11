@@ -20,8 +20,12 @@ fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 pass() { printf 'ok: %s\n' "$1"; }
 
 cleanup() {
-  [[ -f "$MONITOR_PIDFILE" ]] && kill "$(cat "$MONITOR_PIDFILE")" 2>/dev/null || true
-  [[ -f "$EVENTS_PIDFILE" ]] && kill "$(cat "$EVENTS_PIDFILE")" 2>/dev/null || true
+  if [[ -f "$MONITOR_PIDFILE" ]]; then
+    kill "$(cat "$MONITOR_PIDFILE")" 2>/dev/null || true
+  fi
+  if [[ -f "$EVENTS_PIDFILE" ]]; then
+    kill "$(cat "$EVENTS_PIDFILE")" 2>/dev/null || true
+  fi
   T kill-server 2>/dev/null || true
   rm -rf "$TMPROOT"
 }

@@ -196,9 +196,9 @@ else
 fi
 wait_opt "$agent_pane" 1 6000 'blip turn end -> ready'
 
-# 10. Claude's own "Working (... esc to interrupt)" line pins a pane busy
-# through silence. A long thinking spell or tool call emits no output, so
-# the silence heuristic alone calls the pane ready in the middle of a turn.
+# 10. Agent-owned progress lines pin a pane busy through silence. A long
+# thinking spell or background command emits no output, so the silence
+# heuristic alone calls the pane ready in the middle of a turn.
 send_keys -t "$agent_pane" 'clear; printf "Working (12s · esc to interrupt)\n"' Enter
 wait_opt "$agent_pane" 0 3000 'marker output -> busy'
 sleep 4 # well past READY_AGE: silence alone would have flipped ready
@@ -211,8 +211,20 @@ send_keys -t "$agent_pane" clear Enter
 wait_opt "$agent_pane" 1 6000 'marker cleared -> ready'
 pass "pane flipped ready once the marker cleared"
 
-# 11. SIGTERM'd listener takes its control-mode client with it (a bare
-# TERM skips bash EXIT traps; this once orphaned a client for 10 hours).
+# Codex uses a distinct line while a background terminal is still running.
+send_keys -t "$agent_pane" 'clear; printf "Waiting for background terminal (12s · esc to interrupt) · 1 background terminal running\n"' Enter
+wait_opt "$agent_pane" 0 3000 'Codex background marker output -> busy'
+sleep 4
+v="$(T display -p -t "$agent_pane" '#{@agent_ready}' 2>/dev/null)"
+[ "$v" = 0 ] || fail "Codex background marker ignored: @agent_ready=$v after silence"
+pass "Codex background marker held busy through silence"
+
+send_keys -t "$agent_pane" clear Enter
+wait_opt "$agent_pane" 1 6000 'Codex marker cleared -> ready'
+pass "pane flipped ready once the Codex marker cleared"
+
+# 11. SIGTERM makes the listener leave its loop normally, so EXIT cleanup
+# takes the control-mode client with it (one was previously orphaned for 10h).
 kill "$LISTENER_PID"
 start="$(now_ms)"
 while [ "$(T list-clients -F '#{client_flags}' 2>/dev/null | grep -c control-mode)" != 0 ]; do

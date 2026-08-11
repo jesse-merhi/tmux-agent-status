@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+tmux set-option -g @agent_status_plugin_dir "$CURRENT_DIR"
+
+agent_segment='#{P/i:#{?@agent_icon,#{?#{==:#{@agent_ready},1},#{?@agent_color,#[fg=colour#{@agent_color}],#[fg=colour114]}#[bold] #{@agent_icon},#{?#{==:#{@agent_ready},0},#{?#{@agent_pulse},#[fg=colour#{@agent_pulse}],#[fg=colour238]}#[nobold] #{@agent_icon},#[fg=colour238,nobold] #{@agent_icon}}},}}'
+
+append_segment() {
+  local option="$1" format
+  format="$(tmux show-option -gwqv "$option")"
+  case "$format" in
+    *'@agent_icon'*) return 0 ;;
+  esac
+  tmux set-option -agw "$option" "$agent_segment"
+}
+
+append_segment window-status-format
+append_segment window-status-current-format
+
+if [ "$(tmux show-option -gqv @agent_status_start)" != off ]; then
+  tmux run-shell -b "$CURRENT_DIR/scripts/agent-monitor.sh"
+fi

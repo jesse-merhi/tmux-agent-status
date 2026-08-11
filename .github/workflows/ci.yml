@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y lsof shellcheck tmux
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install bash shellcheck tmux
+      - name: Check shell scripts
+        run: shellcheck tmux-agent-status.tmux scripts/*.sh tests/*.sh
+      - name: Run behavior tests
+        run: tests/run.sh

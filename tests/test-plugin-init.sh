@@ -23,7 +23,7 @@ pass "plugin publishes its installation directory"
 
 for option in window-status-format window-status-current-format; do
   format="$(T show-option -gwqv "$option")"
-  count="$(printf '%s' "$format" | awk '{ print gsub(/#\{P\/i:/, "&") }')"
+  count="$(printf '%s' "$format" | awk '{ print gsub(/#\{P(\/i)?:/, "&") }')"
   [ "$count" -eq 1 ] || fail "$option has $count agent status segments"
 done
 pass "both window formats render pane-ordered agent state"
@@ -40,7 +40,7 @@ esac
 TMUX="$(T display-message -p '#{socket_path}'),0,0" "$PLUGIN"
 for option in window-status-format window-status-current-format; do
   format="$(T show-option -gwqv "$option")"
-  count="$(printf '%s' "$format" | awk '{ print gsub(/#\{P\/i:/, "&") }')"
+  count="$(printf '%s' "$format" | awk '{ print gsub(/#\{P(\/i)?:/, "&") }')"
   [ "$count" -eq 1 ] || fail "$option duplicated the segment on reload"
 done
 pass "plugin reload is idempotent"

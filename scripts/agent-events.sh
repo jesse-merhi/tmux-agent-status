@@ -10,7 +10,7 @@
 # silence is a reliable end-of-turn signal.
 #
 # agent-monitor.sh keeps discovery, naming, pulse and wrap; while this
-# listener is alive (global @agent_events=1 plus pidfile) the monitor
+# listener is alive (global ownership options plus the compatibility pidfile) the monitor
 # skips its per-second capture-pane hash polling.
 #
 # One control client sees one session. Argument 1 is the target session
@@ -60,24 +60,83 @@ fi
 
 server_key="$(tmx display-message -p '#{socket_path}' 2>/dev/null | cksum | awk '{ print $1 }')"
 pidfile="${AGENT_EVENTS_PIDFILE:-/tmp/tmux-agent-events-$(id -u)-${server_key:-default}.pid}"
-if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null; then
+claim_name="agent-events-claim-${server_key:-default}"
+claim_locked=0
+
+lock_claim() {
+  tmx wait-for -L "$claim_name" 2>/dev/null || return 1
+  claim_locked=1
+}
+
+unlock_claim() {
+  [ "$claim_locked" = 1 ] || return 0
+  tmx wait-for -U "$claim_name" 2>/dev/null || true
+  claim_locked=0
+}
+
+server_owner() {
+  tmx show-option -gqv @agent_events_pid 2>/dev/null
+}
+
+pidfile_owner() {
+  [ -f "$pidfile" ] && sed -n '1p' "$pidfile" 2>/dev/null
+}
+
+listener_alive() {
+  [[ "$1" =~ ^[0-9]+$ ]] && kill -0 "$1" 2>/dev/null
+}
+
+in_fifo=""
+cleanup() {
+  local owner
+  owner="$(server_owner)"
+  if [ "$owner" = "$$" ]; then
+    tmx set-option -g -u @agent_events 2>/dev/null
+    tmx set-option -g -u @agent_events_pid 2>/dev/null
+  fi
+  if [ "$(pidfile_owner)" = "$$" ]; then
+    rm -f "$pidfile"
+  fi
+  [ -n "$in_fifo" ] && rm -f "$in_fifo"
+}
+trap cleanup EXIT
+# A bare SIGTERM skips bash EXIT traps unless the signal is converted into a
+# normal exit. Release a startup claim if the signal lands inside that short
+# critical section; normal cleanup remains ownership-aware without relocking.
+trap 'unlock_claim; exit 143' TERM
+trap 'unlock_claim; exit 130' INT
+trap 'unlock_claim; exit 129' HUP
+
+# tmux serializes this short claim section for every launch targeting the
+# server. The server option remains authoritative if a stale cleanup removes
+# the compatibility pidfile while the listener is still alive.
+lock_claim || exit 1
+owner="$(server_owner)"
+if listener_alive "$owner"; then
+  printf '%s' "$owner" >"$pidfile"
+  unlock_claim
   exit 0
 fi
-printf '%s' "$$" >"$pidfile"
+
+# Adopt a listener started by an older release, which only published a
+# pidfile. This makes upgrades singleton-safe without interrupting the agent.
+owner="$(pidfile_owner)"
+if listener_alive "$owner"; then
+  tmx set-option -g @agent_events_pid "$owner" 2>/dev/null
+  unlock_claim
+  exit 0
+fi
+
+if ! tmx set-option -g @agent_events_pid "$$" 2>/dev/null ||
+  ! printf '%s' "$$" >"$pidfile"; then
+  tmx set-option -g -u @agent_events_pid 2>/dev/null || true
+  unlock_claim
+  exit 1
+fi
+unlock_claim
 
 in_fifo="$(mktemp -u "${TMPDIR:-/tmp}/agent-events-XXXXXX")"
 mkfifo "$in_fifo" || exit 1
-cleanup() {
-  rm -f "$pidfile" "$in_fifo"
-  tmx set-option -g -u @agent_events 2>/dev/null
-}
-trap cleanup EXIT
-# A bare SIGTERM skips the EXIT trap (bash runs it only on normal exit or
-# trapped signals) — that is how a killed listener once orphaned its
-# control client for 10 hours.
-trap 'exit 143' TERM
-trap 'exit 130' INT
-trap 'exit 129' HUP
 
 now_ms() {
   local t="${EPOCHREALTIME/./}"

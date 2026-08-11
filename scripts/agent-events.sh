@@ -89,27 +89,23 @@ listener_alive() {
 in_fifo=""
 cleanup() {
   local owner
-  if [ "$claim_locked" = 1 ] || lock_claim; then
-    owner="$(server_owner)"
-    if [ "$owner" = "$$" ]; then
-      tmx set-option -g -u @agent_events 2>/dev/null
-      tmx set-option -g -u @agent_events_pid 2>/dev/null
-    fi
-    if [ "$(pidfile_owner)" = "$$" ]; then
-      rm -f "$pidfile"
-    fi
-    unlock_claim
-  elif [ "$(pidfile_owner)" = "$$" ]; then
+  owner="$(server_owner)"
+  if [ "$owner" = "$$" ]; then
+    tmx set-option -g -u @agent_events 2>/dev/null
+    tmx set-option -g -u @agent_events_pid 2>/dev/null
+  fi
+  if [ "$(pidfile_owner)" = "$$" ]; then
     rm -f "$pidfile"
   fi
   [ -n "$in_fifo" ] && rm -f "$in_fifo"
 }
 trap cleanup EXIT
 # A bare SIGTERM skips bash EXIT traps unless the signal is converted into a
-# normal exit. The EXIT cleanup also owns the server claim and control client.
-trap 'exit 143' TERM
-trap 'exit 130' INT
-trap 'exit 129' HUP
+# normal exit. Release a startup claim if the signal lands inside that short
+# critical section; normal cleanup remains ownership-aware without relocking.
+trap 'unlock_claim; exit 143' TERM
+trap 'unlock_claim; exit 130' INT
+trap 'unlock_claim; exit 129' HUP
 
 # tmux serializes this short claim section for every launch targeting the
 # server. The server option remains authoritative if a stale cleanup removes

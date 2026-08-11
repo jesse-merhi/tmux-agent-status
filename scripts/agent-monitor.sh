@@ -99,6 +99,11 @@ events_script="$(cd "$(dirname "$0")" && pwd)/agent-events.sh"
 server_key="$(tmux display-message -p '#{socket_path}' 2>/dev/null | cksum | awk '{ print $1 }')"
 events_pidfile="${AGENT_EVENTS_PIDFILE:-/tmp/tmux-agent-events-$(id -u)-${server_key:-default}.pid}"
 events_alive() {
+  local owner
+  owner="$(tmux show -gqv @agent_events_pid 2>/dev/null)"
+  if [[ "$owner" =~ ^[0-9]+$ ]] && kill -0 "$owner" 2>/dev/null; then
+    return 0
+  fi
   [ -f "$events_pidfile" ] && kill -0 "$(cat "$events_pidfile" 2>/dev/null)" 2>/dev/null
 }
 # The session the listener owns (a control client sees one session);

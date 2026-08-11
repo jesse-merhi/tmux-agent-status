@@ -222,6 +222,9 @@ done
 pass "SIGTERM cleaned up the control client"
 [ -f "$EVENTS_PIDFILE" ] && fail "pidfile survived SIGTERM"
 pass "pidfile removed on SIGTERM"
+v="$(T display -p '#{@agent_events_pid}' 2>/dev/null)"
+[ -z "$v" ] || fail "server owner survived SIGTERM: @agent_events_pid=$v"
+pass "server owner removed on SIGTERM"
 
 AGENT_EVENTS_SOCKET="$SOCK" AGENT_EVENTS_PIDFILE="$EVENTS_PIDFILE" \
   AGENT_READY_AGE=2 AGENT_HOOK_GRACE=4 "$SCRIPT" t &

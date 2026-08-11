@@ -26,9 +26,8 @@
 # itself is the loading animation. One tmux call per frame, in a dedicated
 # child process so discovery/naming work can never stall the animation.
 #
-# Singleton via pidfile; exits when no agent panes remain for ~2min or
-# the tmux server goes away. Started lazily by agent-attention.sh and on
-# conf load.
+# Singleton via pidfile; stays available for hookless discovery until the
+# tmux server goes away. Started by agent-attention.sh and on config load.
 if [ "${BASH_VERSINFO[0]:-0}" -lt 5 ]; then
   for candidate in "${AGENT_STATUS_BASH:-}" /opt/homebrew/bin/bash /usr/local/bin/bash; do
     if [ -z "$candidate" ] || [ ! -x "$candidate" ]; then
@@ -456,12 +455,16 @@ compute_wrap() {
   local cw lw rw budget0 budget1 total idx wid text w i row budget start width next
   local -a cutoffs=()
   [ "$WRAP_STATUS" = on ] || return 0
-  cw="$(
-    while IFS='|' read -r flags tty width; do
-      visible_client "$flags" "$tty" && [ -n "$width" ] && printf '%s\n' "$width"
-    done < <(tmux list-clients -F '#{client_flags}|#{client_tty}|#{client_width}' 2>/dev/null) |
-      sort -n | head -1
-  )"
+  if [[ "${AGENT_MONITOR_CLIENT_WIDTH_OVERRIDE:-}" =~ ^[0-9]+$ ]]; then
+    cw="$AGENT_MONITOR_CLIENT_WIDTH_OVERRIDE"
+  else
+    cw="$(
+      while IFS='|' read -r flags tty width; do
+        visible_client "$flags" "$tty" && [ -n "$width" ] && printf '%s\n' "$width"
+      done < <(tmux list-clients -F '#{client_flags}|#{client_tty}|#{client_width}' 2>/dev/null) |
+        sort -n | head -1
+    )"
+  fi
   [ -n "$cw" ] || return 0
   lw="$(rendered_width "$(tmux display-message -p '#{T:status-left}' 2>/dev/null)")"
   rw="$(rendered_width "$(tmux display-message -p '#{T:status-right}' 2>/dev/null)")"
@@ -715,7 +718,6 @@ pulse_loop() {
 
 declare -A last_hash act_runs last_change last_seen
 client_ttys=()
-idle=0
 events_on=0
 last_reconcile=0
 last_drift=0
@@ -730,7 +732,7 @@ cleanup_all() {
 }
 trap cleanup_all EXIT
 
-while [ "$idle" -lt 120 ] && owns_lock; do
+while owns_lock; do
   tmux has-session 2>/dev/null || break
   now="$(date +%s)"
 
@@ -752,10 +754,8 @@ while [ "$idle" -lt 120 ] && owns_lock; do
     events_sess=""
     events_alive && events_on=1 && events_sess="$(events_session)"
 
-    any_agent=0
     while IFS='|' read -r sess pane ready icon state_ts pending; do
       [ -n "$icon" ] || continue
-      any_agent=1
 
       if [ "$events_on" = 1 ] && [ "$sess" = "$events_sess" ]; then
         continue # agent-events.sh owns @agent_ready for this session
@@ -795,12 +795,6 @@ while [ "$idle" -lt 120 ] && owns_lock; do
       fi
     done < <(tmux list-panes -a -F '#{session_name}|#{pane_id}|#{@agent_ready}|#{@agent_icon}|#{@agent_state_ts}|#{@agent_pending}' 2>/dev/null)
 
-    if [ "$any_agent" -eq 0 ]; then
-      idle=$((idle + 1))
-    else
-      idle=0
-    fi
-
     client_ttys=()
     cur_cw=""
     while IFS='|' read -r flags tty w; do
@@ -822,7 +816,5 @@ done
 kill "$pulse_pid" 2>/dev/null # stop the frame painter before clearing its option
 wait "$pulse_pid" 2>/dev/null
 tmux set-option -g -u @agent_pulse 2>/dev/null || true
-# Leave a static everything-on-line-0 format behind: it renders correctly
-# without the monitor, and unsetting an array option element blanks the bar.
-client_ttys=()
-apply_wrap 99999 2>/dev/null || true
+# Preserve the last valid row split if the monitor is stopped unexpectedly.
+# The options disappear naturally when the tmux server exits.

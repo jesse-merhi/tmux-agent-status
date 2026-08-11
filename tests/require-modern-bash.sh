@@ -6,7 +6,9 @@ require_modern_bash() {
   fi
 
   for candidate in "${AGENT_STATUS_BASH:-}" /opt/homebrew/bin/bash /usr/local/bin/bash; do
-    [ -n "$candidate" ] && [ -x "$candidate" ] || continue
+    if [ -z "$candidate" ] || [ ! -x "$candidate" ]; then
+      continue
+    fi
     if "$candidate" -c '((BASH_VERSINFO[0] >= 5))' 2>/dev/null; then
       exec "$candidate" "$0" "$@"
     fi

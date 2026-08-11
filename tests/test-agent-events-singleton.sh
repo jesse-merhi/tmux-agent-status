@@ -96,4 +96,30 @@ owner="$(T show-option -gqv @agent_events_pid 2>/dev/null)"
 [ "$owner" = "$first_pid" ] || fail "server owner is $owner, want $first_pid"
 pass 'tmux server retained the original listener owner'
 
+# Repeated TERM/restart cycles exercise teardown while the control-mode
+# process substitution is active. Bash must exit normally and clear both
+# ownership records every time.
+for cycle in {1..10}; do
+  kill "$first_pid"
+  wait "$first_pid"
+  rc=$?
+  [ "$rc" = 0 ] || fail "listener TERM cycle $cycle exited $rc, want 0"
+
+  start="$(now_ms)"
+  while [ "$(control_clients)" != 0 ] || [ -e "$EVENTS_PIDFILE" ] ||
+    [ -n "$(T show-option -gqv @agent_events_pid 2>/dev/null)" ]; do
+    [ $(( $(now_ms) - start )) -lt 5000 ] || fail "listener TERM cycle $cycle left ownership behind"
+    sleep 0.05
+  done
+
+  if [ "$cycle" -lt 10 ]; then
+    start_listener
+    first_pid="$STARTED_PID"
+    wait_for_first_listener
+    owner="$(T show-option -gqv @agent_events_pid 2>/dev/null)"
+    [ "$owner" = "$first_pid" ] || fail "restart cycle $cycle owner is $owner, want $first_pid"
+  fi
+done
+pass 'ten TERM/restart cycles cleaned up normally'
+
 printf 'ALL TESTS PASSED\n'

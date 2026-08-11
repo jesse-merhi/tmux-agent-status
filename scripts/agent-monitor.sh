@@ -539,7 +539,7 @@ clear_pane() {
 
 pane_busy_marker() { # pane
   tmux capture-pane -p -t "$1" 2>/dev/null |
-    grep -qiE 'Working \([^)]*esc to interrupt\)'
+    grep -qiE '(Working|Waiting for background terminal) \([^)]*esc to interrupt\)'
 }
 
 checksum() {

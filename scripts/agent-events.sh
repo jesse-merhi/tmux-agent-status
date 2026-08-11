@@ -100,12 +100,10 @@ cleanup() {
   [ -n "$in_fifo" ] && rm -f "$in_fifo"
 }
 trap cleanup EXIT
-# A bare SIGTERM skips bash EXIT traps unless the signal is converted into a
-# normal exit. Release a startup claim if the signal lands inside that short
-# critical section; normal cleanup remains ownership-aware without relocking.
-trap 'unlock_claim; exit 143' TERM
-trap 'unlock_claim; exit 130' INT
-trap 'unlock_claim; exit 129' HUP
+# Let a signal interrupt the timed read, then leave the main loop normally.
+# Exiting directly from the handler can crash Bash while read is unwinding.
+shutdown_requested=0
+trap 'shutdown_requested=1' TERM INT HUP
 
 # tmux serializes this short claim section for every launch targeting the
 # server. The server option remains authoritative if a stale cleanup removes
@@ -179,7 +177,7 @@ has_running_tasks() { # session_id
 
 pane_busy_marker() { # pane
   tmx capture-pane -p -t "$1" 2>/dev/null |
-    grep -qiE 'Working \([^)]*esc to interrupt\)'
+    grep -qiE '(Working|Waiting for background terminal) \([^)]*esc to interrupt\)'
 }
 
 seed_agents() { # initial scan; control-mode notifications keep it fresh after
@@ -385,7 +383,7 @@ tmx set-option -g @agent_events "$SESSION" 2>/dev/null
 last_sweep="$start_ms"
 last_resync="$start_ms"
 
-while :; do
+while [ "$shutdown_requested" = 0 ]; do
   # shellcheck disable=SC2034 # a2-a4: session/window/index args, unused
   if IFS=' ' read -r -t 0.2 -u 4 tag a1 a2 a3 a4 a5 rest; then
     now="$(now_ms)"
@@ -404,6 +402,7 @@ while :; do
     [ "$rc" -gt 128 ] || break # EOF: server died or client detached
     now="$(now_ms)"
   fi
+  [ "$shutdown_requested" = 1 ] && break
   if [ $((now - last_sweep)) -ge "$SWEEP_MS" ]; then
     last_sweep="$now"
     if [ $((now - last_resync)) -ge "$RESYNC_MS" ]; then

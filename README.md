@@ -12,11 +12,13 @@ The plugin discovers Claude Code, Codex, Pi, and OpenCode processes, follows age
 
 ## Requirements
 
-- tmux 3.6 or newer; tmux 3.7 or newer is recommended for pane-index ordering
+- tmux 3.4 or newer; tmux 3.7 or newer is recommended for pane-index ordering
 - Bash 5 or newer
+- a UTF-8 locale for the Claude and Codex icons
 - `ps`, `awk`, `sed`, and either `md5`, `md5sum`, or `cksum`
 - `lsof` for Claude background-task detection
-- optional: `sqlite3`, `jq`, `curl`, and Ollama for generated window titles
+- `jq` when using the hook installer
+- optional: `sqlite3`, `curl`, and Ollama for generated window titles
 
 On macOS, install current Bash and tmux with Homebrew:
 
@@ -43,6 +45,16 @@ The monitor starts automatically and appends its pane-ordered icon segment to bo
 
 Automatic discovery works without agent configuration. Hooks make transitions immediate and preserve working state while Claude has background tasks.
 
+Install user-level hooks for both Claude Code and Codex:
+
+```sh
+~/.tmux/plugins/tmux-agent-status/scripts/install-hooks.sh
+```
+
+The installer safely merges `~/.claude/settings.json` and `~/.codex/hooks.json`, preserves unrelated hooks and settings, creates timestamped backups before changes, and is idempotent. Select one agent with `--claude` or `--codex`; preview changes with `--dry-run`.
+
+Codex requires one additional trust step for user-installed command hooks: start Codex, open `/hooks`, review the new definitions, and trust them. Codex will skip untrusted hooks. See the [Codex hooks documentation](https://developers.openai.com/codex/hooks).
+
 The hook command is:
 
 ```sh
@@ -67,13 +79,9 @@ Wire these lifecycle events to the command in Claude Code settings:
 
 ### Codex
 
-Codex can use `notify` for an immediate ready transition:
+The installer adds native Codex lifecycle hooks for `SessionStart`, `UserPromptSubmit`, `Stop`, and `SessionEnd`. These register the pane, switch to working as soon as a prompt is submitted, switch to ready when the turn stops, and clear the icon when the session ends. Existing `notify` configuration is left untouched.
 
-```toml
-notify = ["bash", "-lc", "~/.tmux/plugins/tmux-agent-status/scripts/agent-attention.sh ready '⬢'"]
-```
-
-The control-mode listener detects subsequent output and returns the pane to working state.
+The control-mode listener remains a fallback and detects subsequent output between lifecycle events.
 
 ## Options
 
@@ -118,6 +126,8 @@ Run static checks and behavior tests:
 ```sh
 shellcheck tmux-agent-status.tmux scripts/*.sh tests/*.sh
 tests/run.sh
+docker build -f tests/Dockerfile -t tmux-agent-status-fresh .
+docker run --rm tmux-agent-status-fresh
 ```
 
-Tests use throwaway tmux servers and clean them up on exit.
+Tests use throwaway tmux servers and clean them up on exit. The Docker test runs the complete suite from Ubuntu 24.04 with a fresh non-root home, including both agents' hook installation, generated commands, renderer behavior, and the resulting tmux busy, ready, and off states.

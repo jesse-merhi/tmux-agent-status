@@ -19,11 +19,20 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y lsof shellcheck tmux
+        run: sudo apt-get update && sudo apt-get install -y jq lsof shellcheck tmux
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
-        run: brew install bash shellcheck tmux
+        run: brew install bash jq shellcheck tmux
       - name: Check shell scripts
         run: shellcheck tmux-agent-status.tmux scripts/*.sh tests/*.sh
       - name: Run behavior tests
         run: tests/run.sh
+
+  fresh-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build fresh Ubuntu image
+        run: docker build -f tests/Dockerfile -t tmux-agent-status-fresh .
+      - name: Verify fresh plugin and lifecycle hooks
+        run: docker run --rm tmux-agent-status-fresh

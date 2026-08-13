@@ -16,8 +16,8 @@ The plugin discovers Claude Code, Codex, Pi, and OpenCode processes, follows age
 - Bash 5 or newer
 - a UTF-8 locale for the Claude and Codex icons
 - `ps`, `awk`, `sed`, and either `md5`, `md5sum`, or `cksum`
-- `lsof` for Claude background-task detection
-- `jq` when using the hook installer
+- `lsof` for Claude background-task detection and exact Codex thread selection
+- `jq` for the hook installer and semantic Codex titles
 - optional: `sqlite3`, `curl`, and Ollama for generated window titles
 
 On macOS, install current Bash and tmux with Homebrew:

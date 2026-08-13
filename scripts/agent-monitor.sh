@@ -256,36 +256,113 @@ args_task() {
   printf '%s' "${words[*]:-}"
 }
 
-# Recent conversation context for a pane: the codex thread's first
-# prompt plus the last few rollout messages when a resume uuid exists,
-# else the visible tail of the pane itself.
-ai_context() { # agent_args pane_id
-  local uuid first rp task
+sql_escape() {
+  printf '%s' "$1" | sed "s/'/''/g"
+}
+
+codex_thread_id() { # agent_args agent_pid pane_path
+  local uuid path candidate row edge_table query
+  local -a candidates=() roots=()
+  [ -r "$codex_db" ] && command -v sqlite3 >/dev/null 2>&1 || return 0
+
   uuid="$(printf '%s' "${1:-}" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)"
-  if [ -n "$uuid" ] && [ -r "$codex_db" ]; then
-    first="$(sqlite3 -readonly "$codex_db" "SELECT substr(title,1,300) FROM threads WHERE id = '$uuid' LIMIT 1" 2>/dev/null)"
-    rp="$(sqlite3 -readonly "$codex_db" "SELECT rollout_path FROM threads WHERE id = '$uuid' LIMIT 1" 2>/dev/null)"
-    if [ -n "$first" ]; then
-      printf 'Task: %s\n' "$first"
-      [ -r "$rp" ] && tail -n 150 "$rp" 2>/dev/null |
-        jq -r 'select(.type == "response_item" and .payload.type == "message")
-               | (.payload.content // []) | map(.text? // empty) | join(" ")' 2>/dev/null |
-        grep -v '^$\|^# AGENTS\|^<' | tail -3 | cut -c1-300
-      return 0
-    fi
+  if [ -n "$uuid" ] &&
+    sqlite3 -readonly "$codex_db" "SELECT 1 FROM threads WHERE id = '$(sql_escape "$uuid")' LIMIT 1" 2>/dev/null |
+      grep -q 1; then
+    printf '%s' "$uuid"
+    return 0
   fi
-  # No thread record: the task words from the command line plus the pane
-  # tail, minus TUI chrome and sub-agent status noise that produces
-  # titles like "waiting for agents".
+
+  if [ -n "${2:-}" ] && command -v lsof >/dev/null 2>&1; then
+    while IFS= read -r path; do
+      candidate="$(printf '%s' "$path" |
+        sed -nE 's/.*rollout-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9-]+-([0-9a-f-]{36})\.jsonl$/\1/p')"
+      [ -n "$candidate" ] && candidates+=("$candidate")
+    done < <(lsof -Fn -p "$2" 2>/dev/null | sed -n 's/^n//p' |
+      grep '/.codex/sessions/.*/rollout-.*\.jsonl$')
+  fi
+
+  edge_table="$(sqlite3 -readonly "$codex_db" \
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'thread_spawn_edges'" 2>/dev/null)"
+  for candidate in "${candidates[@]+"${candidates[@]}"}"; do
+    query="SELECT updated_at || '|' || id FROM threads WHERE id = '$(sql_escape "$candidate")' AND archived = 0"
+    if [ "$edge_table" = 1 ]; then
+      query+=" AND NOT EXISTS (SELECT 1 FROM thread_spawn_edges WHERE child_thread_id = threads.id)"
+    fi
+    row="$(sqlite3 -readonly "$codex_db" "$query LIMIT 1" 2>/dev/null)"
+    [ -n "$row" ] && roots+=("$row")
+  done
+  if [ "${#roots[@]}" -gt 0 ]; then
+    printf '%s\n' "${roots[@]}" | sort -t '|' -k1,1nr | head -1 | cut -d '|' -f2-
+    return 0
+  fi
+
+  [ -n "${3:-}" ] || return 0
+  query="SELECT id FROM threads WHERE archived = 0 AND cwd = '$(sql_escape "$3")'"
+  if [ "$edge_table" = 1 ]; then
+    query+=" AND NOT EXISTS (SELECT 1 FROM thread_spawn_edges WHERE child_thread_id = threads.id)"
+  fi
+  sqlite3 -readonly "$codex_db" "$query ORDER BY updated_at DESC LIMIT 1" 2>/dev/null
+}
+
+codex_semantic_context() { # rollout_path
+  [ -r "${1:-}" ] && command -v jq >/dev/null 2>&1 || return 0
+  grep -E '"type"[[:space:]]*:[[:space:]]*"message"' "$1" 2>/dev/null | tail -100 |
+    jq -r '
+      select(.type == "response_item" and .payload.type == "message")
+      | select(
+          .payload.role == "user"
+          or (.payload.role == "assistant" and (.payload.phase // "") == "final_answer")
+        )
+      | .payload.role as $role
+      | (.payload.content // [])
+      | map(.text? // empty) | join(" ")
+      | gsub("[[:space:]]+"; " ")
+      | select(length > 0)
+      | select(startswith("# AGENTS.md instructions") | not)
+      | select(startswith("<environment_context>") | not)
+      | "\($role): \(.)"
+    ' 2>/dev/null | tail -6 | cut -c1-300
+}
+
+# Prefer the current root conversation for Codex. Raw pane output is a last
+# resort for other agents only: browser dumps and tool results are not task
+# descriptions and caused fabricated names such as "fix bitbucket switcher".
+ai_context() { # agent_args pane_id agent_pid pane_path agent
+  local thread first rp recent task
+  if [ "${5:-}" = codex ] || [ "${5:-}" = codex-aarch64-a ]; then
+    thread="$(codex_thread_id "${1:-}" "${3:-}" "${4:-}")"
+    if [ -n "$thread" ]; then
+      IFS='|' read -r first rp <<EOF
+$(sqlite3 -readonly "$codex_db" \
+  "SELECT replace(replace(replace(substr(title,1,300),'|',' '),char(10),' '),char(13),' '), rollout_path FROM threads WHERE id = '$(sql_escape "$thread")' LIMIT 1" \
+  2>/dev/null)
+EOF
+      recent="$(codex_semantic_context "$rp")"
+      [ -n "$recent" ] && printf 'Current conversation:\n%s\n' "$recent"
+      [ -n "$first" ] && printf 'Original task: %s\n' "$first"
+      [ -n "$recent$first" ] && return 0
+    fi
+    task="$(args_task "${1:-}")"
+    [ -n "$task" ] && printf 'Current task: %s\n' "$task"
+    return 0
+  fi
+
   task="$(args_task "${1:-}")"
-  [ -n "$task" ] && printf 'Task: %s\n' "$task"
-  printf 'Recent output:\n'
+  [ -n "$task" ] && printf 'Current task: %s\n' "$task"
+  printf 'Recent visible output:\n'
   tmux capture-pane -p -t "$2" 2>/dev/null | grep -v '^[[:space:]]*$' |
     grep -vE 'esc to interrupt|/ps to view|^[›❯]|tokens|context left|^[─━]+|gpt-|claude-|· Main' |
     grep -vE '[Ww]aiting for [0-9]+ agent|Finished waiting' |
     grep -vE '^[[:space:]•└├·-]*[0-9a-f-]{30,}[[:space:]]*$' |
     tail -8 | cut -c1-200
 }
+
+if [ "${AGENT_MONITOR_SELFTEST:-}" = codex-context ]; then
+  ai_context "${AGENT_MONITOR_SELFTEST_ARGS:-}" "${AGENT_MONITOR_SELFTEST_PANE:-}" \
+    "${AGENT_MONITOR_SELFTEST_PID:-}" "${AGENT_MONITOR_SELFTEST_PATH:-}" codex
+  exit 0
+fi
 
 # Ask the local model for a short title. Retries once warmer when the
 # first answer is junk; empty output on failure so callers fall through
@@ -296,7 +373,7 @@ ai_title() { # context
   prompt="Coding session:
 $1
 
-Write a VERY SHORT title — 4 words or fewer if at all possible — describing what this session is working on. Base it on the Task line when present, and be specific (feature, component, or PR number). No punctuation, no quotes, output only the title.
+Write a VERY SHORT title — 4 words or fewer — describing what this session is working on. Prefer Current conversation or Current task. Use Original task only when the current context does not identify the work. Be specific (feature, component, or PR number). No punctuation, no quotes, output only the title.
 Examples of good titles: fix pagination counts | review imagegen PR 86360 | tmux status icons"
   for temp in 0.2 0.7; do
     payload="$(jq -n --arg m "$AI_MODEL" --arg p "$prompt" --argjson t "$temp" \
@@ -318,11 +395,11 @@ Examples of good titles: fix pagination counts | review imagegen PR 86360 | tmux
 # First prompt of a resumed codex thread, looked up by the uuid in the
 # agent's args. Beats keyword guessing: it is what the session was
 # started to do.
-thread_task() { # agent args
-  local uuid title
-  uuid="$(printf '%s' "${1:-}" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)"
-  [ -n "$uuid" ] && [ -r "$codex_db" ] || return 0
-  title="$(sqlite3 -readonly "$codex_db" "SELECT title FROM threads WHERE id = '$uuid' LIMIT 1" 2>/dev/null)"
+thread_task() { # agent_args agent_pid pane_path
+  local thread title
+  thread="$(codex_thread_id "${1:-}" "${2:-}" "${3:-}")"
+  [ -n "$thread" ] || return 0
+  title="$(sqlite3 -readonly "$codex_db" "SELECT title FROM threads WHERE id = '$(sql_escape "$thread")' LIMIT 1" 2>/dev/null)"
   [ -n "$title" ] || return 0
   printf '%s' "$title" | perl -CS -Mutf8 -pe '
     s#https?://github\.com/[A-Za-z0-9_.-]+/([A-Za-z0-9_.-]+)/(?:pull|issues)/(\d+)#$1\#$2#gi;
@@ -334,21 +411,38 @@ thread_task() { # agent args
   ' 2>/dev/null
 }
 
+trim_window_name() {
+  local out="$1"
+  if [ "${#out}" -gt "$NAME_MAX" ]; then
+    case "${out:$NAME_MAX:1}" in
+      ' ') out="${out:0:$NAME_MAX}" ;;
+      *)
+        out="${out:0:$NAME_MAX}"
+        case "$out" in
+          *' '*) out="${out% *}" ;;
+          *-*) out="${out%-*}" ;;
+        esac
+        ;;
+    esac
+  fi
+  printf '%s' "${out%"${out##*[![:space:]]}"}"
+}
+
 # Short task name. Claude panes use Claude Code's own session summary
 # (via pane-label.sh); other agents get a local-model title first, then
 # pane-label's semantic label, the originating codex thread prompt, and
 # the agent's command line. Short generic titles get the project dir
 # appended so two "setup" windows stay distinguishable.
-window_label() { # pid cmd path title agent_args agent pane_id
+window_label() { # pid cmd path title agent_args agent pane_id agent_pid
   local out="" dir="$3"
   if [ "${6:-}" != claude ]; then
-    out="$(ai_title "$(ai_context "${5:-}" "${7:-}")")"
+    out="$(ai_title "$(ai_context "${5:-}" "${7:-}" "${8:-}" "$3" "${6:-}")")"
     if [ -n "$out" ]; then
       if [ -n "$dir" ] && [ $((${#out} + ${#dir} + 3)) -le "$NAME_MAX" ] &&
         [[ "$out" != *"$dir"* ]]; then
         out="$out · $dir"
       fi
-      printf '%s' "$out" # used as-is; the status-line wrap absorbs width
+      trim_window_name "$out"
       return 0
     fi
   fi
@@ -373,26 +467,14 @@ window_label() { # pid cmd path title agent_args agent pane_id
       */*) out="" ;;    # path soup: "node /Users/me/.codex/…"
     esac
   fi
-  [ -n "$out" ] || out="$(thread_task "${5:-}")"
+  [ -n "$out" ] || out="$(thread_task "${5:-}" "${8:-}" "$3")"
   [ -n "$out" ] || out="$(args_task "${5:-}")"
   [ -n "$out" ] || return 0
   if [ -n "$dir" ] && [ $((${#out} + ${#dir} + 3)) -le "$NAME_MAX" ] &&
     [[ "$out" != *"$dir"* ]]; then
     out="$out · $dir"
   fi
-  if [ "${#out}" -gt "$NAME_MAX" ]; then
-    case "${out:$NAME_MAX:1}" in
-      ' ') out="${out:0:$NAME_MAX}" ;; # cut landed on a word break
-      *)
-        out="${out:0:$NAME_MAX}"
-        case "$out" in
-          *' '*) out="${out% *}" ;; # never cut mid-word
-          *-*) out="${out%-*}" ;;   # lone long token: cut at a hyphen
-        esac
-        ;;
-    esac
-  fi
-  printf '%s' "${out%"${out##*[![:space:]]}"}"
+  trim_window_name "$out"
 }
 
 # --- window-list wrap ------------------------------------------------------
@@ -562,16 +644,16 @@ declare -A name_cache name_key name_time name_inputs
 # Scan process trees; maintain pane icons/colours and window names.
 discover() {
   local now="$1" ps_tree ps_args refreshed=0 need events_on=0 events_sess="" found_agent=0
-  local sess wid pane pid cmd icon color ts dir title ni agent agent_line apid aargs key label
+  local sess wid pane active pid cmd icon color ts dir title ni agent agent_line apid aargs key label
   local name auto named lock det rename_manual
   rename_manual="$(tmux_option @agent_status_rename_manual_windows)"
   [ -n "$rename_manual" ] || rename_manual="$(tmux_option @agent_rename_manual_windows)"
   events_alive && events_on=1 && events_sess="$(events_session)"
   ps_tree="$(ps -ax -o pid=,ppid=,comm= 2>/dev/null)"
   ps_args="$(ps -ax -o pid=,command= 2>/dev/null)"
-  local -A detected=() detected_real=() icon_wids=() seen_panes=()
+  local -A detected=() detected_real=() detected_active=() icon_wids=() seen_panes=()
 
-  while IFS='|' read -r sess wid pane pid cmd icon color ts dir title ni; do
+  while IFS='|' read -r sess wid pane active pid cmd icon color ts dir title ni; do
     seen_panes[$pane]=1
     agent_line="$(agent_of_pane "$pid" "$cmd")"
     IFS=$'\t' read -r agent apid aargs <<<"$agent_line"
@@ -610,22 +692,28 @@ discover() {
         name_key[$pane]="$key"
         name_time[$pane]="$now"
         name_inputs[$pane]="${ni:-0}"
-        name_cache[$pane]="$(window_label "$pid" "$cmd" "$dir" "$title" "${aargs:-}" "$agent" "$pane")"
+        name_cache[$pane]="$(window_label "$pid" "$cmd" "$dir" "$title" "${aargs:-}" "$agent" "$pane" "$apid")"
       fi
 
-      # Any agent pane may supply the window name; a real task label
-      # beats another pane's directory fallback.
+      # The active agent pane names a multi-pane window. If it has no useful
+      # label, retain the first real label as a fallback.
       label="${name_cache[$pane]:-}"
-      if [ -n "$label" ] && [ "${detected_real[$wid]:-}" != 1 ]; then
+      if [ -n "$label" ] &&
+        { [ "$active" = 1 ] || [ "${detected_real[$wid]:-}" != 1 ]; }; then
         detected[$wid]="$label"
         detected_real[$wid]=1
+        detected_active[$wid]="$active"
       fi
-      [ -n "${detected[$wid]:-}" ] || detected[$wid]="${dir:0:$NAME_MAX}"
+      if [ -z "${detected[$wid]:-}" ] ||
+        { [ "$active" = 1 ] && [ "${detected_active[$wid]:-}" != 1 ]; }; then
+        detected[$wid]="${dir:0:$NAME_MAX}"
+        detected_active[$wid]="$active"
+      fi
     elif [ -n "$icon" ]; then
       icon_wids[$wid]=1 # keep the window claimed until the stale check
       [ $((now - ${ts:-0})) -gt "$STALE_HOOK_SECS" ] && clear_pane "$pane"
     fi
-  done < <(tmux list-panes -a -F '#{session_name}|#{window_id}|#{pane_id}|#{pane_pid}|#{pane_current_command}|#{@agent_icon}|#{@agent_color}|#{@agent_state_ts}|#{b:pane_current_path}|#{pane_title}|#{@agent_inputs}' 2>/dev/null)
+  done < <(tmux list-panes -a -F '#{session_name}|#{window_id}|#{pane_id}|#{pane_active}|#{pane_pid}|#{pane_current_command}|#{@agent_icon}|#{@agent_color}|#{@agent_state_ts}|#{b:pane_current_path}|#{pane_title}|#{@agent_inputs}' 2>/dev/null)
 
   if [ "$found_agent" = 1 ] && [ "$events_on" = 0 ] && [ -x "$events_script" ]; then
     nohup "$events_script" >/dev/null 2>&1 & # singleton via its pidfile

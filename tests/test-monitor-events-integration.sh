@@ -36,6 +36,7 @@ cleanup() {
   T kill-server 2>/dev/null
   rm -f "$MONITOR_PIDFILE" "$EVENTS_PIDFILE"
   rm -rf "$MONITOR_PIDFILE.lock"
+  rm -rf "$TEST_ROOT"
 }
 trap cleanup EXIT
 
@@ -67,6 +68,14 @@ pane_ready_is() { [ "$(T display -p -t "$1" '#{@agent_ready}' 2>/dev/null)" = "$
 pulse_set() { [ -n "$(T display -p '#{@agent_pulse}' 2>/dev/null)" ]; }
 pulse_clear() { [ -z "$(T display -p '#{@agent_pulse}' 2>/dev/null)" ]; }
 
+TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/agent-monitor-integration.XXXXXX")"
+mkdir -p "$TEST_ROOT/first-task" "$TEST_ROOT/active-task"
+cat >"$TEST_ROOT/label.sh" <<'EOF'
+#!/usr/bin/env bash
+basename "$3"
+EOF
+chmod +x "$TEST_ROOT/label.sh"
+
 # A pane whose process argv[0] is "claude": discovery sees a real agent
 # (claude also keeps window_label off the ollama path).
 # Each input line is answered with five spaced output chunks, enough to
@@ -74,10 +83,17 @@ pulse_clear() { [ -z "$(T display -p '#{@agent_pulse}' 2>/dev/null)" ]; }
 # Expanded inside the fake agent process, not by this test process.
 # shellcheck disable=SC2016
 T -f /dev/null new-session -d -s t -x 80 -y 24 \
+  -c "$TEST_ROOT/first-task" \
   bash -c 'exec -a claude bash -c "while read -r l; do for i in 1 2 3 4 5; do echo \"\$l-\$i\"; sleep 0.05; done; done"' ||
   fail "scratch tmux server"
+# shellcheck disable=SC2016
+second_pane="$(T split-window -d -P -F '#{pane_id}' -t t -c "$TEST_ROOT/active-task" \
+  bash -c 'exec -a claude bash -c "while read -r l; do for i in 1 2 3 4 5; do echo \"\$l-\$i\"; sleep 0.05; done; done"')" ||
+  fail "second fake agent pane"
+T select-pane -t "$second_pane"
 T set -g status off
 T set -g @agent_status_rename_manual_windows on
+T set -g @agent_status_label_command "$TEST_ROOT/label.sh"
 agent_pane="$(T display -p -t t '#{pane_id}')"
 socket_path="$(T display -p '#{socket_path}')"
 
@@ -92,6 +108,9 @@ MONITOR_PID=$!
 wait_for 13000 "discovery never tagged the fake claude pane" \
   bash -c "[ \"\$(tmux -L $SOCK display -p -t $agent_pane '#{@agent_icon}' 2>/dev/null)\" = '✳' ]"
 pass "discovery tagged fake claude pane"
+wait_for 13000 "window did not use the active agent pane label" \
+  bash -c "[ \"\$(tmux -L $SOCK display -p -t t '#{window_name}' 2>/dev/null)\" = 'active-task' ]"
+pass "active agent pane names its window"
 wait_for 5000 "monitor never started agent-events.sh" events_listener_alive
 pass "monitor started the events listener"
 

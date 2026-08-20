@@ -97,6 +97,7 @@ cleanup() {
   if [ "$(pidfile_owner)" = "$$" ]; then
     rm -f "$pidfile"
   fi
+  exec 9>&- 2>/dev/null || true
   [ -n "$in_fifo" ] && rm -f "$in_fifo"
 }
 trap cleanup EXIT
@@ -135,6 +136,9 @@ unlock_claim
 
 in_fifo="$(mktemp -u "${TMPDIR:-/tmp}/agent-events-XXXXXX")"
 mkfifo "$in_fifo" || exit 1
+# Open both ends before forking so concurrent listener launches cannot strand
+# the elected owner while its reader and writer wait for each other.
+exec 9<>"$in_fifo" || exit 1
 
 now_ms() {
   local t="${EPOCHREALTIME/./}"
@@ -320,8 +324,7 @@ control_stdin() {
   # Quoted: # would otherwise start a tmux command-line comment.
   printf "refresh-client -B 'icons:%%*:#{@agent_icon}'\n"
   printf "refresh-client -B 'hooks:%%*:#{@agent_state_ts}'\n"
-  # Keep the fifo's write end open so the client never sees EOF.
-  exec 3>"$in_fifo"
+  # Stay alive with the listener; descriptor 9 keeps the client from seeing EOF.
   while kill -0 "$$" 2>/dev/null; do sleep 5; done
 }
 
@@ -359,7 +362,7 @@ on_subscription() { # name pane value(may be empty)
 start_ms="$(now_ms)"
 seed_agents "$start_ms"
 
-control_stdin >"$in_fifo" &
+control_stdin >&9 &
 stdin_pid=$!
 trap 'cleanup; kill "$stdin_pid" 2>/dev/null' EXIT
 
@@ -369,7 +372,7 @@ socket_path="$(tmx display -p '#{socket_path}' 2>/dev/null)"
 [ -n "$socket_path" ] || exit 0
 exec 4< <(
   unset TMUX TMUX_PANE
-  command tmux -S "$socket_path" -C attach -t "$SESSION" -f read-only,ignore-size <"$in_fifo" 2>/dev/null
+  command tmux -S "$socket_path" -C attach -t "$SESSION" -f read-only,ignore-size <&9 2>/dev/null
 )
 # A control client does not exit on stdin EOF: kill it explicitly or it
 # outlives us and the server buffers the whole event stream for a client

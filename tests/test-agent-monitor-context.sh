@@ -26,21 +26,40 @@ fail() {
 }
 pass() { printf 'ok: %s\n' "$1"; }
 
-if ! command -v sqlite3 >/dev/null 2>&1; then
-  printf 'SKIP: sqlite3 is not installed; semantic Codex context is optional\n'
-  exit 0
-fi
 [ -x "$SCRIPT" ] || fail "agent-monitor.sh missing or not executable at $SCRIPT"
 
 T -f /dev/null new-session -d -s t bash || fail "scratch tmux server"
 socket_path="$(T display -p '#{socket_path}')"
+T set -g @agent_status_codex_db "$TEST_ROOT/missing.sqlite"
+
+context="$({
+  TMUX="$socket_path,0,0" \
+    AGENT_MONITOR_PIDFILE="$MONITOR_PIDFILE" \
+    AGENT_MONITOR_SELFTEST=codex-context \
+    AGENT_MONITOR_SELFTEST_ARGS="codex exec --sandbox workspace-write Review PR 4" \
+    "$SCRIPT"
+} 2>/dev/null)"
+
+[[ "$context" == *"Current task: Review PR 4"* ]] ||
+  fail "command-line fallback missing without a readable database: $context"
+pass "Codex falls back to its command-line task without a readable database"
+
+if ! command -v sqlite3 >/dev/null 2>&1; then
+  printf 'SKIP: sqlite3 is not installed; semantic Codex context is optional\n'
+  exit 0
+fi
+
 db="$TEST_ROOT/state.sqlite"
 root_id="11111111-1111-4111-8111-111111111111"
 child_id="22222222-2222-4222-8222-222222222222"
 resumed_id="33333333-3333-4333-8333-333333333333"
-root_rollout="$TEST_ROOT/rollout-2026-08-13T10-00-00-$root_id.jsonl"
-child_rollout="$TEST_ROOT/rollout-2026-08-13T10-01-00-$child_id.jsonl"
-resumed_rollout="$TEST_ROOT/rollout-2026-08-13T10-02-00-$resumed_id.jsonl"
+cwd_id="44444444-4444-4444-8444-444444444444"
+sessions_dir="$TEST_ROOT/home/.codex/sessions/2026/08/13"
+mkdir -p "$sessions_dir"
+root_rollout="$sessions_dir/rollout-2026-08-13T10-00-00-$root_id.jsonl"
+child_rollout="$sessions_dir/rollout-2026-08-13T10-01-00-$child_id.jsonl"
+resumed_rollout="$sessions_dir/rollout-2026-08-13T10-02-00-$resumed_id.jsonl"
+cwd_rollout="$sessions_dir/rollout-2026-08-13T10-03-00-$cwd_id.jsonl"
 
 cat >"$root_rollout" <<'EOF'
 {"type":"response_item","payload":{"type":"custom_tool_call_output","output":"Fix Bitbucket switcher"}}
@@ -52,6 +71,9 @@ cat >"$child_rollout" <<'EOF'
 EOF
 cat >"$resumed_rollout" <<'EOF'
 {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Audit Signal setup variants"}]}}
+EOF
+cat >"$cwd_rollout" <<'EOF'
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Maintain cwd fallback behavior"}]}}
 EOF
 
 sqlite3 "$db" <<SQL
@@ -72,6 +94,7 @@ INSERT INTO threads VALUES ('$root_id', '$root_rollout', 10, '/repo/skills', 'Or
 with evidence', 0);
 INSERT INTO threads VALUES ('$child_id', '$child_rollout', 20, '/repo/skills', 'Child Bitbucket task', 0);
 INSERT INTO threads VALUES ('$resumed_id', '$resumed_rollout', 30, '/repo/openclaw', 'Old Signal task', 0);
+INSERT INTO threads VALUES ('$cwd_id', '$cwd_rollout', 40, '/repo/skills', 'Newer cwd fallback title', 0);
 INSERT INTO thread_spawn_edges VALUES ('$root_id', '$child_id', 'running');
 SQL
 T set -g @agent_status_codex_db "$db"
@@ -95,6 +118,20 @@ context="$({
 [[ "$context" == *"with evidence"* ]] || fail "multiline root title was truncated: $context"
 [[ "$context" != *"Bitbucket switcher"* ]] || fail "tool or child context leaked: $context"
 pass "bare Codex resolves its root rollout and ignores tool output"
+
+context="$({
+  TMUX="$socket_path,0,0" \
+    AGENT_MONITOR_PIDFILE="$MONITOR_PIDFILE" \
+    AGENT_MONITOR_SELFTEST=codex-context \
+    AGENT_MONITOR_SELFTEST_ARGS=codex \
+    AGENT_MONITOR_SELFTEST_PATH=/repo/skills \
+    "$SCRIPT"
+} 2>/dev/null)"
+
+[[ "$context" == *"Maintain cwd fallback behavior"* ]] || fail "cwd conversation missing: $context"
+[[ "$context" == *"Newer cwd fallback title"* ]] || fail "newest cwd title missing: $context"
+[[ "$context" != *"proof-pack"* ]] || fail "open rollout leaked into cwd fallback: $context"
+pass "Codex falls back to the newest root conversation for its cwd"
 
 context="$({
   TMUX="$socket_path,0,0" \

@@ -26,7 +26,10 @@ fail() {
 }
 pass() { printf 'ok: %s\n' "$1"; }
 
-command -v sqlite3 >/dev/null 2>&1 || fail "sqlite3 is required"
+if ! command -v sqlite3 >/dev/null 2>&1; then
+  printf 'SKIP: sqlite3 is not installed; semantic Codex context is optional\n'
+  exit 0
+fi
 [ -x "$SCRIPT" ] || fail "agent-monitor.sh missing or not executable at $SCRIPT"
 
 T -f /dev/null new-session -d -s t bash || fail "scratch tmux server"

@@ -56,6 +56,7 @@ resumed_id="33333333-3333-4333-8333-333333333333"
 cwd_id="44444444-4444-4444-8444-444444444444"
 orphan_child_id="55555555-5555-4555-8555-555555555555"
 legacy_id="66666666-6666-4666-8666-666666666666"
+delegated_id="77777777-7777-4777-8777-777777777777"
 sessions_dir="$TEST_ROOT/custom-codex-home/sessions/2026/08/13"
 mkdir -p "$sessions_dir"
 root_rollout="$sessions_dir/rollout-2026-08-13T10-00-00-$root_id.jsonl"
@@ -64,6 +65,7 @@ resumed_rollout="$sessions_dir/rollout-2026-08-13T10-02-00-$resumed_id.jsonl"
 cwd_rollout="$sessions_dir/rollout-2026-08-13T10-03-00-$cwd_id.jsonl"
 orphan_child_rollout="$sessions_dir/rollout-2026-08-13T10-04-00-$orphan_child_id.jsonl"
 legacy_rollout="$sessions_dir/rollout-2026-08-13T10-05-00-$legacy_id.jsonl"
+delegated_rollout="$sessions_dir/rollout-2026-08-13T10-06-00-$delegated_id.jsonl"
 
 cat >"$root_rollout" <<'EOF'
 {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Ancient task outside the bounded rollout tail"}]}}
@@ -98,6 +100,9 @@ EOF
 cat >"$legacy_rollout" <<'EOF'
 {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Maintain legacy schema support"}]}}
 EOF
+cat >"$delegated_rollout" <<'EOF'
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Internal Codex delegation"}]}}
+EOF
 
 sqlite3 "$db" <<SQL
 CREATE TABLE threads (
@@ -120,6 +125,7 @@ INSERT INTO threads VALUES ('$child_id', '$child_rollout', 20, '/repo/skills', '
 INSERT INTO threads VALUES ('$resumed_id', '$resumed_rollout', 30, '/repo/openclaw', 'Old Signal task', 0, 'user');
 INSERT INTO threads VALUES ('$cwd_id', '$cwd_rollout', 40, '/repo/skills', 'Newer cwd fallback title', 0, 'user');
 INSERT INTO threads VALUES ('$orphan_child_id', '$orphan_child_rollout', 50, '/repo/skills', 'Orphan cold review worker', 0, 'subagent');
+INSERT INTO threads VALUES ('$delegated_id', '$delegated_rollout', 60, '/repo/skills', 'Agent-created delegated task', 0, 'agent_created_thread');
 INSERT INTO thread_spawn_edges VALUES ('$root_id', '$child_id', 'running');
 SQL
 T set -g @agent_status_codex_db "$db"
@@ -150,8 +156,8 @@ label="$({
 [[ "$label" == "Newer cwd fallback title" ]] || fail "full-path cwd label missing: $label"
 pass "window labeling uses the full pane path for Codex cwd recovery"
 
-bash -c 'exec 3<"$1" 4<"$2" 5<"$3"; sleep 60' _ \
-  "$root_rollout" "$child_rollout" "$orphan_child_rollout" &
+bash -c 'exec 3<"$1" 4<"$2" 5<"$3" 6<"$4"; sleep 60' _ \
+  "$root_rollout" "$child_rollout" "$orphan_child_rollout" "$delegated_rollout" &
 HOLDER_PID=$!
 sleep 0.2
 
@@ -170,6 +176,7 @@ context="$({
 [[ "$context" == *"with evidence"* ]] || fail "multiline root title was truncated: $context"
 [[ "$context" != *"Bitbucket switcher"* ]] || fail "tool or child context leaked: $context"
 [[ "$context" != *"cold review worker"* ]] || fail "edge-less subagent context leaked: $context"
+[[ "$context" != *"Codex delegation"* ]] || fail "agent-created delegation leaked: $context"
 [[ "$context" != *"Ancient task"* ]] || fail "semantic context scanned beyond its bounded tail: $context"
 pass "bare Codex resolves its root rollout from a custom home and ignores tool output"
 

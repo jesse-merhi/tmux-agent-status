@@ -285,7 +285,8 @@ codex_thread_id() { # agent_args agent_pid pane_path
     "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'thread_spawn_edges'" 2>/dev/null)"
   source_column="$(sqlite3 -readonly "$codex_db" \
     "SELECT 1 FROM pragma_table_info('threads') WHERE name = 'thread_source'" 2>/dev/null)"
-  [ "$source_column" = 1 ] && root_filter=" AND COALESCE(threads.thread_source, '') != 'subagent'"
+  [ "$source_column" = 1 ] &&
+    root_filter=" AND COALESCE(threads.thread_source, '') NOT IN ('subagent', 'agent_created_thread')"
   for candidate in "${candidates[@]+"${candidates[@]}"}"; do
     query="SELECT updated_at || '|' || id FROM threads WHERE id = '$(sql_escape "$candidate")' AND archived = 0${root_filter}"
     if [ "$edge_table" = 1 ]; then

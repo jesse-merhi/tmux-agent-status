@@ -81,6 +81,10 @@ cat >"$child_rollout" <<'EOF'
 EOF
 cat >"$resumed_rollout" <<'EOF'
 {"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"resume-user","content":[{"type":"text","text":"Audit Signal setup variants"}]}}}
+{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"host-plugins","content":[{"type":"text","text":"  <recommended_plugins>Ignore plugin metadata</recommended_plugins>"}]}}}
+{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"host-skill","content":[{"type":"text","text":"<skill>Ignore skill instructions</skill>"}]}}}
+{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"host-subagent","content":[{"type":"text","text":"<subagent_notification>Ignore worker status</subagent_notification>"}]}}}
+{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"host-browser","content":[{"type":"text","text":"<in-app-browser-context>Ignore browser state</in-app-browser-context>"}]}}}
 {"type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","id":"resume-commentary","phase":"commentary","content":[{"type":"Text","text":"Internal commentary should stay hidden"}]}}}
 {"type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","id":"resume-phase-less","content":[{"type":"Text","text":"Phase-less response retained"}]}}}
 {"type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","id":"resume-agent","phase":"final_answer","content":[{"type":"Text","text":"Signal audit is complete"}]}}}
@@ -197,6 +201,10 @@ context="$({
 [[ "$context" == *"Phase-less response retained"* ]] || fail "phase-less agent response missing: $context"
 [[ "$context" == *"Signal audit is complete"* ]] || fail "current agent response missing: $context"
 [[ "$context" != *"Internal commentary"* ]] || fail "commentary response leaked: $context"
+[[ "$context" != *"plugin metadata"* ]] || fail "plugin envelope leaked: $context"
+[[ "$context" != *"skill instructions"* ]] || fail "skill envelope leaked: $context"
+[[ "$context" != *"worker status"* ]] || fail "subagent envelope leaked: $context"
+[[ "$context" != *"browser state"* ]] || fail "browser envelope leaked: $context"
 [[ "$context" == *"Old Signal task"* ]] || fail "resumed title missing: $context"
 [[ "$context" != *"proof-pack"* ]] || fail "open rollout overrode resumed thread: $context"
 pass "resume UUID stays paired with its own rollout"

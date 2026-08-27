@@ -334,9 +334,11 @@ codex_semantic_context() { # rollout_path
       | .content
       | map(.text? // empty) | join(" ")
       | gsub("[[:space:]]+"; " ")
+      | sub("^[[:space:]]+"; "")
+      | sub("[[:space:]]+$"; "")
       | select(length > 0)
       | select(startswith("# AGENTS.md instructions") | not)
-      | select(startswith("<environment_context>") | not)
+      | select(test("^<[A-Za-z][A-Za-z0-9_-]*[ >]") | not)
       | "\($role): \(.)"
     ' 2>/dev/null | tail -6 | cut -c1-300
 }

@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y jq lsof shellcheck tmux
+        run: sudo apt-get update && sudo apt-get install -y jq lsof shellcheck sqlite3 tmux
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
         run: brew install bash jq shellcheck tmux

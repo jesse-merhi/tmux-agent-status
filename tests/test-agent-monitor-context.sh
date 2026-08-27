@@ -54,7 +54,7 @@ root_id="11111111-1111-4111-8111-111111111111"
 child_id="22222222-2222-4222-8222-222222222222"
 resumed_id="33333333-3333-4333-8333-333333333333"
 cwd_id="44444444-4444-4444-8444-444444444444"
-sessions_dir="$TEST_ROOT/home/.codex/sessions/2026/08/13"
+sessions_dir="$TEST_ROOT/custom-codex-home/sessions/2026/08/13"
 mkdir -p "$sessions_dir"
 root_rollout="$sessions_dir/rollout-2026-08-13T10-00-00-$root_id.jsonl"
 child_rollout="$sessions_dir/rollout-2026-08-13T10-01-00-$child_id.jsonl"
@@ -62,7 +62,13 @@ resumed_rollout="$sessions_dir/rollout-2026-08-13T10-02-00-$resumed_id.jsonl"
 cwd_rollout="$sessions_dir/rollout-2026-08-13T10-03-00-$cwd_id.jsonl"
 
 cat >"$root_rollout" <<'EOF'
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Ancient task outside the bounded rollout tail"}]}}
 {"type":"response_item","payload":{"type":"custom_tool_call_output","output":"Fix Bitbucket switcher"}}
+EOF
+for ((i = 0; i < 2100; i++)); do
+  printf '%s\n' '{"type":"response_item","payload":{"type":"custom_tool_call_output","output":"Old tool noise"}}' >>"$root_rollout"
+done
+cat >>"$root_rollout" <<'EOF'
 {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Upgrade PR proof-pack evidence"}]}}
 {"type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Proof requirements are implemented"}]}}
 EOF
@@ -143,7 +149,8 @@ context="$({
 [[ "$context" == *"Original proof-pack task"* ]] || fail "root title missing: $context"
 [[ "$context" == *"with evidence"* ]] || fail "multiline root title was truncated: $context"
 [[ "$context" != *"Bitbucket switcher"* ]] || fail "tool or child context leaked: $context"
-pass "bare Codex resolves its root rollout and ignores tool output"
+[[ "$context" != *"Ancient task"* ]] || fail "semantic context scanned beyond its bounded tail: $context"
+pass "bare Codex resolves its root rollout from a custom home and ignores tool output"
 
 context="$({
   TMUX="$socket_path,0,0" \

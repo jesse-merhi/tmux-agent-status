@@ -278,8 +278,7 @@ codex_thread_id() { # agent_args agent_pid pane_path
       candidate="$(printf '%s' "$path" |
         sed -nE 's/.*rollout-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9-]+-([0-9a-f-]{36})\.jsonl$/\1/p')"
       [ -n "$candidate" ] && candidates+=("$candidate")
-    done < <(lsof -Fn -p "$2" 2>/dev/null | sed -n 's/^n//p' |
-      grep '/.codex/sessions/.*/rollout-.*\.jsonl$')
+    done < <(lsof -Fn -p "$2" 2>/dev/null | sed -n 's/^n//p')
   fi
 
   edge_table="$(sqlite3 -readonly "$codex_db" \
@@ -307,7 +306,8 @@ codex_thread_id() { # agent_args agent_pid pane_path
 
 codex_semantic_context() { # rollout_path
   [ -r "${1:-}" ] && command -v jq >/dev/null 2>&1 || return 0
-  grep -E '"type"[[:space:]]*:[[:space:]]*"message"' "$1" 2>/dev/null | tail -100 |
+  tail -n 2000 "$1" 2>/dev/null |
+    grep -E '"type"[[:space:]]*:[[:space:]]*"message"' | tail -100 |
     jq -r '
       select(.type == "response_item" and .payload.type == "message")
       | select(
@@ -435,7 +435,7 @@ trim_window_name() {
 # appended so two "setup" windows stay distinguishable.
 window_label() { # pid cmd dir title agent_args agent pane_id agent_pid pane_path
   local out="" dir="$3" pane_path="${9:-$3}"
-  if [ "${6:-}" != claude ]; then
+  if [ "${6:-}" != claude ] && [ -n "$AI_MODEL" ]; then
     out="$(ai_title "$(ai_context "${5:-}" "${7:-}" "${8:-}" "$pane_path" "${6:-}")")"
     if [ -n "$out" ]; then
       if [ -n "$dir" ] && [ $((${#out} + ${#dir} + 3)) -le "$NAME_MAX" ] &&

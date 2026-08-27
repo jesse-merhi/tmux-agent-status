@@ -99,6 +99,32 @@ INSERT INTO thread_spawn_edges VALUES ('$root_id', '$child_id', 'running');
 SQL
 T set -g @agent_status_codex_db "$db"
 
+label="$({
+  TMUX="$socket_path,0,0" \
+    AGENT_MONITOR_PIDFILE="$MONITOR_PIDFILE" \
+    AGENT_MONITOR_SELFTEST=window-label \
+    AGENT_MONITOR_SELFTEST_AGENT=pi \
+    AGENT_MONITOR_SELFTEST_ARGS="pi Repair parser behavior" \
+    AGENT_MONITOR_SELFTEST_DIR=skills \
+    AGENT_MONITOR_SELFTEST_PATH=/repo/skills \
+    "$SCRIPT"
+} 2>/dev/null)"
+[[ "$label" == "Repair parser behavior" ]] || fail "Pi inherited Codex context: $label"
+pass "non-Codex agents do not inherit Codex thread context"
+
+label="$({
+  TMUX="$socket_path,0,0" \
+    AGENT_MONITOR_PIDFILE="$MONITOR_PIDFILE" \
+    AGENT_MONITOR_SELFTEST=window-label \
+    AGENT_MONITOR_SELFTEST_AGENT=codex \
+    AGENT_MONITOR_SELFTEST_ARGS=codex \
+    AGENT_MONITOR_SELFTEST_DIR=skills \
+    AGENT_MONITOR_SELFTEST_PATH=/repo/skills \
+    "$SCRIPT"
+} 2>/dev/null)"
+[[ "$label" == "Newer cwd fallback title" ]] || fail "full-path cwd label missing: $label"
+pass "window labeling uses the full pane path for Codex cwd recovery"
+
 bash -c 'exec 3<"$1" 4<"$2"; sleep 60' _ "$root_rollout" "$child_rollout" &
 HOLDER_PID=$!
 sleep 0.2

@@ -69,9 +69,10 @@ pulse_set() { [ -n "$(T display -p '#{@agent_pulse}' 2>/dev/null)" ]; }
 pulse_clear() { [ -z "$(T display -p '#{@agent_pulse}' 2>/dev/null)" ]; }
 
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/agent-monitor-integration.XXXXXX")"
-mkdir -p "$TEST_ROOT/first-task" "$TEST_ROOT/active-task"
+mkdir -p "$TEST_ROOT/first-task" "$TEST_ROOT/active-task" "$TEST_ROOT/empty-active"
 cat >"$TEST_ROOT/label.sh" <<'EOF'
 #!/usr/bin/env bash
+[ "$(basename "$3")" = empty-active ] && exit 0
 basename "$3"
 EOF
 chmod +x "$TEST_ROOT/label.sh"
@@ -120,6 +121,23 @@ T select-pane -t "$second_pane"
 wait_for 13000 "window did not follow the restored active agent pane" \
   bash -c "[ \"\$(tmux -L $SOCK display -p -t t '#{window_name}' 2>/dev/null)\" = 'active-task' ]"
 pass "window follows active agent pane restoration"
+
+# An active pane without a useful label must not replace a real task label
+# already supplied by another agent pane with its directory fallback.
+# shellcheck disable=SC2016
+empty_pane="$(T split-window -d -P -F '#{pane_id}' -t t -c "$TEST_ROOT/empty-active" \
+  bash -c 'exec -a claude cat')" ||
+  fail "empty-label fake agent pane"
+T select-pane -t "$empty_pane"
+wait_for 13000 "discovery never tagged the empty-label agent pane" \
+  bash -c "[ -n \"\$(tmux -L $SOCK display -p -t $empty_pane '#{@agent_icon}' 2>/dev/null)\" ]"
+wait_for 13000 "empty active pane overwrote a real task label" \
+  bash -c "[ \"\$(tmux -L $SOCK display -p -t t '#{window_name}' 2>/dev/null)\" = 'first-task' ]"
+pass "empty active pane preserves another pane's real task label"
+T select-pane -t "$second_pane"
+wait_for 13000 "window did not restore the labeled active pane" \
+  bash -c "[ \"\$(tmux -L $SOCK display -p -t t '#{window_name}' 2>/dev/null)\" = 'active-task' ]"
+T kill-pane -t "$empty_pane"
 wait_for 5000 "monitor never started agent-events.sh" events_listener_alive
 pass "monitor started the events listener"
 

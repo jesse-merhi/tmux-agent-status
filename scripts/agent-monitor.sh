@@ -433,10 +433,10 @@ trim_window_name() {
 # pane-label's semantic label, the originating codex thread prompt, and
 # the agent's command line. Short generic titles get the project dir
 # appended so two "setup" windows stay distinguishable.
-window_label() { # pid cmd path title agent_args agent pane_id agent_pid
-  local out="" dir="$3"
+window_label() { # pid cmd dir title agent_args agent pane_id agent_pid pane_path
+  local out="" dir="$3" pane_path="${9:-$3}"
   if [ "${6:-}" != claude ]; then
-    out="$(ai_title "$(ai_context "${5:-}" "${7:-}" "${8:-}" "$3" "${6:-}")")"
+    out="$(ai_title "$(ai_context "${5:-}" "${7:-}" "${8:-}" "$pane_path" "${6:-}")")"
     if [ -n "$out" ]; then
       if [ -n "$dir" ] && [ $((${#out} + ${#dir} + 3)) -le "$NAME_MAX" ] &&
         [[ "$out" != *"$dir"* ]]; then
@@ -467,7 +467,11 @@ window_label() { # pid cmd path title agent_args agent pane_id agent_pid
       */*) out="" ;;    # path soup: "node /Users/me/.codex/…"
     esac
   fi
-  [ -n "$out" ] || out="$(thread_task "${5:-}" "${8:-}" "$3")"
+  if [ -z "$out" ]; then
+    case "${6:-}" in
+      codex | codex-aarch64-a) out="$(thread_task "${5:-}" "${8:-}" "$pane_path")" ;;
+    esac
+  fi
   [ -n "$out" ] || out="$(args_task "${5:-}")"
   [ -n "$out" ] || return 0
   if [ -n "$dir" ] && [ $((${#out} + ${#dir} + 3)) -le "$NAME_MAX" ] &&
@@ -476,6 +480,13 @@ window_label() { # pid cmd path title agent_args agent pane_id agent_pid
   fi
   trim_window_name "$out"
 }
+
+if [ "${AGENT_MONITOR_SELFTEST:-}" = window-label ]; then
+  window_label "" "" "${AGENT_MONITOR_SELFTEST_DIR:-}" "" \
+    "${AGENT_MONITOR_SELFTEST_ARGS:-}" "${AGENT_MONITOR_SELFTEST_AGENT:-}" "" \
+    "${AGENT_MONITOR_SELFTEST_PID:-}" "${AGENT_MONITOR_SELFTEST_PATH:-}"
+  exit 0
+fi
 
 # --- window-list wrap ------------------------------------------------------
 # The monitor owns the status lines with self-contained formats (never unset:
@@ -644,7 +655,7 @@ declare -A name_cache name_key name_time name_inputs
 # Scan process trees; maintain pane icons/colours and window names.
 discover() {
   local now="$1" ps_tree ps_args refreshed=0 need events_on=0 events_sess="" found_agent=0
-  local sess wid pane active pid cmd icon color ts dir title ni agent agent_line apid aargs key label
+  local sess wid pane active pid cmd icon color ts dir path title ni agent agent_line apid aargs key label
   local name auto named lock det rename_manual
   rename_manual="$(tmux_option @agent_status_rename_manual_windows)"
   [ -n "$rename_manual" ] || rename_manual="$(tmux_option @agent_rename_manual_windows)"
@@ -653,7 +664,7 @@ discover() {
   ps_args="$(ps -ax -o pid=,command= 2>/dev/null)"
   local -A detected=() detected_real=() detected_active=() icon_wids=() seen_panes=()
 
-  while IFS='|' read -r sess wid pane active pid cmd icon color ts dir title ni; do
+  while IFS='|' read -r sess wid pane active pid cmd icon color ts dir path title ni; do
     seen_panes[$pane]=1
     agent_line="$(agent_of_pane "$pid" "$cmd")"
     IFS=$'\t' read -r agent apid aargs <<<"$agent_line"
@@ -692,7 +703,7 @@ discover() {
         name_key[$pane]="$key"
         name_time[$pane]="$now"
         name_inputs[$pane]="${ni:-0}"
-        name_cache[$pane]="$(window_label "$pid" "$cmd" "$dir" "$title" "${aargs:-}" "$agent" "$pane" "$apid")"
+        name_cache[$pane]="$(window_label "$pid" "$cmd" "$dir" "$title" "${aargs:-}" "$agent" "$pane" "$apid" "$path")"
       fi
 
       # The active agent pane names a multi-pane window. If it has no useful
@@ -705,7 +716,8 @@ discover() {
         detected_active[$wid]="$active"
       fi
       if [ -z "${detected[$wid]:-}" ] ||
-        { [ "$active" = 1 ] && [ "${detected_active[$wid]:-}" != 1 ]; }; then
+        { [ "$active" = 1 ] && [ "${detected_active[$wid]:-}" != 1 ] &&
+          [ "${detected_real[$wid]:-}" != 1 ]; }; then
         detected[$wid]="${dir:0:$NAME_MAX}"
         detected_active[$wid]="$active"
       fi
@@ -713,7 +725,7 @@ discover() {
       icon_wids[$wid]=1 # keep the window claimed until the stale check
       [ $((now - ${ts:-0})) -gt "$STALE_HOOK_SECS" ] && clear_pane "$pane"
     fi
-  done < <(tmux list-panes -a -F '#{session_name}|#{window_id}|#{pane_id}|#{pane_active}|#{pane_pid}|#{pane_current_command}|#{@agent_icon}|#{@agent_color}|#{@agent_state_ts}|#{b:pane_current_path}|#{pane_title}|#{@agent_inputs}' 2>/dev/null)
+  done < <(tmux list-panes -a -F '#{session_name}|#{window_id}|#{pane_id}|#{pane_active}|#{pane_pid}|#{pane_current_command}|#{@agent_icon}|#{@agent_color}|#{@agent_state_ts}|#{b:pane_current_path}|#{pane_current_path}|#{pane_title}|#{@agent_inputs}' 2>/dev/null)
 
   if [ "$found_agent" = 1 ] && [ "$events_on" = 0 ] && [ -x "$events_script" ]; then
     nohup "$events_script" >/dev/null 2>&1 & # singleton via its pidfile

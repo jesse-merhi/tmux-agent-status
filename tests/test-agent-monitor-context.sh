@@ -80,7 +80,8 @@ cat >"$child_rollout" <<'EOF'
 {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Fix Bitbucket switcher"}]}}
 EOF
 cat >"$resumed_rollout" <<'EOF'
-{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Audit Signal setup variants"}]}}
+{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"resume-user","content":[{"type":"text","text":"Audit Signal setup variants"}]}}}
+{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","id":"resume-agent","phase":"final_answer","content":[{"type":"Text","text":"Signal audit is complete"}]}}}
 EOF
 cat >"$cwd_rollout" <<'EOF'
 {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Maintain cwd fallback behavior"}]}}
@@ -191,6 +192,7 @@ context="$({
 } 2>/dev/null)"
 
 [[ "$context" == *"Audit Signal setup variants"* ]] || fail "resumed conversation missing: $context"
+[[ "$context" == *"Signal audit is complete"* ]] || fail "current agent response missing: $context"
 [[ "$context" == *"Old Signal task"* ]] || fail "resumed title missing: $context"
 [[ "$context" != *"proof-pack"* ]] || fail "open rollout overrode resumed thread: $context"
 pass "resume UUID stays paired with its own rollout"

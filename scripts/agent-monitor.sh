@@ -310,15 +310,28 @@ codex_thread_id() { # agent_args agent_pid pane_path
 codex_semantic_context() { # rollout_path
   [ -r "${1:-}" ] && command -v jq >/dev/null 2>&1 || return 0
   tail -n 2000 "$1" 2>/dev/null |
-    grep -E '"type"[[:space:]]*:[[:space:]]*"message"' | tail -100 |
+    grep -E '"type"[[:space:]]*:[[:space:]]*"(message|UserMessage|AgentMessage)"' | tail -100 |
     jq -r '
-      select(.type == "response_item" and .payload.type == "message")
-      | select(
-          .payload.role == "user"
-          or (.payload.role == "assistant" and (.payload.phase // "") == "final_answer")
-        )
-      | .payload.role as $role
-      | (.payload.content // [])
+      if .type == "response_item" and .payload.type == "message" then
+        {
+          role: .payload.role,
+          phase: (.payload.phase // ""),
+          content: (.payload.content // [])
+        }
+      elif .type == "event_msg" and .payload.type == "item_completed"
+        and .payload.item.type == "UserMessage" then
+        {role: "user", phase: "", content: (.payload.item.content // [])}
+      elif .type == "event_msg" and .payload.type == "item_completed"
+        and .payload.item.type == "AgentMessage" then
+        {
+          role: "assistant",
+          phase: (.payload.item.phase // ""),
+          content: (.payload.item.content // [])
+        }
+      else empty end
+      | select(.role == "user" or (.role == "assistant" and .phase == "final_answer"))
+      | .role as $role
+      | .content
       | map(.text? // empty) | join(" ")
       | gsub("[[:space:]]+"; " ")
       | select(length > 0)

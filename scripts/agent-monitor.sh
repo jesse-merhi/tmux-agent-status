@@ -261,7 +261,7 @@ sql_escape() {
 }
 
 codex_thread_id() { # agent_args agent_pid pane_path
-  local uuid path candidate row edge_table query
+  local uuid path candidate row edge_table source_column root_filter="" query
   local -a candidates=() roots=()
   [ -r "$codex_db" ] && command -v sqlite3 >/dev/null 2>&1 || return 0
 
@@ -283,8 +283,11 @@ codex_thread_id() { # agent_args agent_pid pane_path
 
   edge_table="$(sqlite3 -readonly "$codex_db" \
     "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'thread_spawn_edges'" 2>/dev/null)"
+  source_column="$(sqlite3 -readonly "$codex_db" \
+    "SELECT 1 FROM pragma_table_info('threads') WHERE name = 'thread_source'" 2>/dev/null)"
+  [ "$source_column" = 1 ] && root_filter=" AND COALESCE(threads.thread_source, '') != 'subagent'"
   for candidate in "${candidates[@]+"${candidates[@]}"}"; do
-    query="SELECT updated_at || '|' || id FROM threads WHERE id = '$(sql_escape "$candidate")' AND archived = 0"
+    query="SELECT updated_at || '|' || id FROM threads WHERE id = '$(sql_escape "$candidate")' AND archived = 0${root_filter}"
     if [ "$edge_table" = 1 ]; then
       query+=" AND NOT EXISTS (SELECT 1 FROM thread_spawn_edges WHERE child_thread_id = threads.id)"
     fi
@@ -297,7 +300,7 @@ codex_thread_id() { # agent_args agent_pid pane_path
   fi
 
   [ -n "${3:-}" ] || return 0
-  query="SELECT id FROM threads WHERE archived = 0 AND cwd = '$(sql_escape "$3")'"
+  query="SELECT id FROM threads WHERE archived = 0 AND cwd = '$(sql_escape "$3")'${root_filter}"
   if [ "$edge_table" = 1 ]; then
     query+=" AND NOT EXISTS (SELECT 1 FROM thread_spawn_edges WHERE child_thread_id = threads.id)"
   fi

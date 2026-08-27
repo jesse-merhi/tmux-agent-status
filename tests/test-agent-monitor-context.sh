@@ -54,12 +54,16 @@ root_id="11111111-1111-4111-8111-111111111111"
 child_id="22222222-2222-4222-8222-222222222222"
 resumed_id="33333333-3333-4333-8333-333333333333"
 cwd_id="44444444-4444-4444-8444-444444444444"
+orphan_child_id="55555555-5555-4555-8555-555555555555"
+legacy_id="66666666-6666-4666-8666-666666666666"
 sessions_dir="$TEST_ROOT/custom-codex-home/sessions/2026/08/13"
 mkdir -p "$sessions_dir"
 root_rollout="$sessions_dir/rollout-2026-08-13T10-00-00-$root_id.jsonl"
 child_rollout="$sessions_dir/rollout-2026-08-13T10-01-00-$child_id.jsonl"
 resumed_rollout="$sessions_dir/rollout-2026-08-13T10-02-00-$resumed_id.jsonl"
 cwd_rollout="$sessions_dir/rollout-2026-08-13T10-03-00-$cwd_id.jsonl"
+orphan_child_rollout="$sessions_dir/rollout-2026-08-13T10-04-00-$orphan_child_id.jsonl"
+legacy_rollout="$sessions_dir/rollout-2026-08-13T10-05-00-$legacy_id.jsonl"
 
 cat >"$root_rollout" <<'EOF'
 {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Ancient task outside the bounded rollout tail"}]}}
@@ -81,6 +85,12 @@ EOF
 cat >"$cwd_rollout" <<'EOF'
 {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Maintain cwd fallback behavior"}]}}
 EOF
+cat >"$orphan_child_rollout" <<'EOF'
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Internal cold review worker"}]}}
+EOF
+cat >"$legacy_rollout" <<'EOF'
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Maintain legacy schema support"}]}}
+EOF
 
 sqlite3 "$db" <<SQL
 CREATE TABLE threads (
@@ -89,7 +99,8 @@ CREATE TABLE threads (
   updated_at INTEGER NOT NULL,
   cwd TEXT NOT NULL,
   title TEXT NOT NULL,
-  archived INTEGER NOT NULL
+  archived INTEGER NOT NULL,
+  thread_source TEXT
 );
 CREATE TABLE thread_spawn_edges (
   parent_thread_id TEXT NOT NULL,
@@ -97,10 +108,11 @@ CREATE TABLE thread_spawn_edges (
   status TEXT NOT NULL
 );
 INSERT INTO threads VALUES ('$root_id', '$root_rollout', 10, '/repo/skills', 'Original proof-pack task
-with evidence', 0);
-INSERT INTO threads VALUES ('$child_id', '$child_rollout', 20, '/repo/skills', 'Child Bitbucket task', 0);
-INSERT INTO threads VALUES ('$resumed_id', '$resumed_rollout', 30, '/repo/openclaw', 'Old Signal task', 0);
-INSERT INTO threads VALUES ('$cwd_id', '$cwd_rollout', 40, '/repo/skills', 'Newer cwd fallback title', 0);
+with evidence', 0, 'user');
+INSERT INTO threads VALUES ('$child_id', '$child_rollout', 20, '/repo/skills', 'Child Bitbucket task', 0, 'subagent');
+INSERT INTO threads VALUES ('$resumed_id', '$resumed_rollout', 30, '/repo/openclaw', 'Old Signal task', 0, 'user');
+INSERT INTO threads VALUES ('$cwd_id', '$cwd_rollout', 40, '/repo/skills', 'Newer cwd fallback title', 0, 'user');
+INSERT INTO threads VALUES ('$orphan_child_id', '$orphan_child_rollout', 50, '/repo/skills', 'Orphan cold review worker', 0, 'subagent');
 INSERT INTO thread_spawn_edges VALUES ('$root_id', '$child_id', 'running');
 SQL
 T set -g @agent_status_codex_db "$db"
@@ -131,7 +143,8 @@ label="$({
 [[ "$label" == "Newer cwd fallback title" ]] || fail "full-path cwd label missing: $label"
 pass "window labeling uses the full pane path for Codex cwd recovery"
 
-bash -c 'exec 3<"$1" 4<"$2"; sleep 60' _ "$root_rollout" "$child_rollout" &
+bash -c 'exec 3<"$1" 4<"$2" 5<"$3"; sleep 60' _ \
+  "$root_rollout" "$child_rollout" "$orphan_child_rollout" &
 HOLDER_PID=$!
 sleep 0.2
 
@@ -149,6 +162,7 @@ context="$({
 [[ "$context" == *"Original proof-pack task"* ]] || fail "root title missing: $context"
 [[ "$context" == *"with evidence"* ]] || fail "multiline root title was truncated: $context"
 [[ "$context" != *"Bitbucket switcher"* ]] || fail "tool or child context leaked: $context"
+[[ "$context" != *"cold review worker"* ]] || fail "edge-less subagent context leaked: $context"
 [[ "$context" != *"Ancient task"* ]] || fail "semantic context scanned beyond its bounded tail: $context"
 pass "bare Codex resolves its root rollout from a custom home and ignores tool output"
 
@@ -180,5 +194,32 @@ context="$({
 [[ "$context" == *"Old Signal task"* ]] || fail "resumed title missing: $context"
 [[ "$context" != *"proof-pack"* ]] || fail "open rollout overrode resumed thread: $context"
 pass "resume UUID stays paired with its own rollout"
+
+legacy_db="$TEST_ROOT/legacy-state.sqlite"
+sqlite3 "$legacy_db" <<SQL
+CREATE TABLE threads (
+  id TEXT PRIMARY KEY,
+  rollout_path TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  cwd TEXT NOT NULL,
+  title TEXT NOT NULL,
+  archived INTEGER NOT NULL
+);
+INSERT INTO threads VALUES ('$legacy_id', '$legacy_rollout', 10, '/repo/legacy', 'Legacy Codex title', 0);
+SQL
+T set -g @agent_status_codex_db "$legacy_db"
+
+context="$({
+  TMUX="$socket_path,0,0" \
+    AGENT_MONITOR_PIDFILE="$MONITOR_PIDFILE" \
+    AGENT_MONITOR_SELFTEST=codex-context \
+    AGENT_MONITOR_SELFTEST_ARGS=codex \
+    AGENT_MONITOR_SELFTEST_PATH=/repo/legacy \
+    "$SCRIPT"
+} 2>/dev/null)"
+
+[[ "$context" == *"Maintain legacy schema support"* ]] || fail "legacy conversation missing: $context"
+[[ "$context" == *"Legacy Codex title"* ]] || fail "legacy title missing: $context"
+pass "Codex root selection remains compatible with legacy thread schemas"
 
 printf 'ALL TESTS PASSED\n'

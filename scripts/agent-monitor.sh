@@ -325,7 +325,7 @@ codex_semantic_context() { # rollout_path
         and .payload.item.type == "AgentMessage" then
         {
           role: "assistant",
-          phase: (.payload.item.phase // ""),
+          phase: (.payload.item.phase // "final_answer"),
           content: (.payload.item.content // [])
         }
       else empty end

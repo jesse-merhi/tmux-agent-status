@@ -81,6 +81,8 @@ cat >"$child_rollout" <<'EOF'
 EOF
 cat >"$resumed_rollout" <<'EOF'
 {"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"resume-user","content":[{"type":"text","text":"Audit Signal setup variants"}]}}}
+{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","id":"resume-commentary","phase":"commentary","content":[{"type":"Text","text":"Internal commentary should stay hidden"}]}}}
+{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","id":"resume-phase-less","content":[{"type":"Text","text":"Phase-less response retained"}]}}}
 {"type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","id":"resume-agent","phase":"final_answer","content":[{"type":"Text","text":"Signal audit is complete"}]}}}
 EOF
 cat >"$cwd_rollout" <<'EOF'
@@ -192,7 +194,9 @@ context="$({
 } 2>/dev/null)"
 
 [[ "$context" == *"Audit Signal setup variants"* ]] || fail "resumed conversation missing: $context"
+[[ "$context" == *"Phase-less response retained"* ]] || fail "phase-less agent response missing: $context"
 [[ "$context" == *"Signal audit is complete"* ]] || fail "current agent response missing: $context"
+[[ "$context" != *"Internal commentary"* ]] || fail "commentary response leaked: $context"
 [[ "$context" == *"Old Signal task"* ]] || fail "resumed title missing: $context"
 [[ "$context" != *"proof-pack"* ]] || fail "open rollout overrode resumed thread: $context"
 pass "resume UUID stays paired with its own rollout"

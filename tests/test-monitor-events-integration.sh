@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Integration: agent-monitor.sh discovers a (fake) agent, starts
-# agent-events.sh, leaves state flips to it, pulses while busy, and
-# restarts the listener if it dies. Runs on a throwaway tmux server;
+# agent-events.sh, leaves state flips to it, keeps headless animation idle,
+# and recovers either monitor. Runs on a throwaway tmux server;
 # the production monitor/listener are untouched (pidfile overrides).
 # shellcheck source=tests/require-modern-bash.sh
 source "$(cd "$(dirname "$0")" && pwd)/require-modern-bash.sh"
@@ -31,6 +31,7 @@ send_keys() {
 }
 
 cleanup() {
+  [ -f "$MONITOR_PIDFILE" ] && kill "$(cat "$MONITOR_PIDFILE")" 2>/dev/null
   [ -n "$MONITOR_PID" ] && kill "$MONITOR_PID" 2>/dev/null
   [ -f "$EVENTS_PIDFILE" ] && kill "$(cat "$EVENTS_PIDFILE")" 2>/dev/null
   T kill-server 2>/dev/null
@@ -65,8 +66,10 @@ events_listener_alive() {
   [ -f "$EVENTS_PIDFILE" ] && kill -0 "$(cat "$EVENTS_PIDFILE" 2>/dev/null)" 2>/dev/null
 }
 pane_ready_is() { [ "$(T display -p -t "$1" '#{@agent_ready}' 2>/dev/null)" = "$2" ]; }
-pulse_set() { [ -n "$(T display -p '#{@agent_pulse}' 2>/dev/null)" ]; }
-pulse_clear() { [ -z "$(T display -p '#{@agent_pulse}' 2>/dev/null)" ]; }
+headless_pane_ready() {
+  [ -z "$(T display -p '#{@agent_pulse}')" ] || fail "animated a server without a visible client"
+  pane_ready_is "$1" 1
+}
 
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/agent-monitor-integration.XXXXXX")"
 mkdir -p "$TEST_ROOT/first-task" "$TEST_ROOT/active-task" "$TEST_ROOT/empty-active"
@@ -175,23 +178,43 @@ name="$(T display -p -t t '#{window_name}' 2>/dev/null)"
 T set-option -w -t t -u @agent_rename_lock
 pass "rename lock preserves manual window name"
 
-# 5. Output flips busy fast and the pulse breathes.
+# 5. Output flips busy fast. This server has only control clients, so the
+# painter stays idle until a user actually attaches a terminal.
 send_keys -t "$agent_pane" 'stream-1 stream-2 stream-3 stream-4 stream-5' Enter
 wait_for 2000 "pane never flipped busy on output" pane_ready_is "$agent_pane" 0
 pass "event-driven busy flip"
-wait_for 2000 "pulse never started while busy" pulse_set
-pass "pulse running while busy"
 
-# 6. Silence flips ready and the pulse stops.
-wait_for 6000 "pane never flipped ready after silence" pane_ready_is "$agent_pane" 1
+# 6. Silence flips ready.
+wait_for 6000 "pane never flipped ready after silence" headless_pane_ready "$agent_pane"
 pass "event-driven ready flip"
-wait_for 3000 "pulse never cleared when idle" pulse_clear
-pass "pulse cleared when idle"
+pass "headless server has no animation work"
 
 # 7. A dead listener is restarted by the next discovery pass.
 kill "$(cat "$EVENTS_PIDFILE")" 2>/dev/null
 sleep 0.3
 wait_for 13000 "monitor never restarted a dead listener" events_listener_alive
 pass "dead listener restarted by discovery"
+
+# 8. A killed discovery monitor is recovered by the existing listener,
+# without a config reload or a new user prompt. Kill abruptly to exercise
+# stale lock recovery as well as the server's published owner.
+previous_monitor="$(cat "$MONITOR_PIDFILE")"
+previous_painter_client="$(T list-clients -F '#{client_pid}|#{client_flags}' | awk -F '|' '/no-output/ { print $1; exit }')"
+[ -n "$previous_painter_client" ] || fail "monitor painter never attached"
+previous_painter="$(ps -p "$previous_painter_client" -o ppid= | awk '{ print $1 }')"
+[ -n "$previous_painter" ] || fail "monitor painter process was not found"
+kill -KILL "$previous_monitor"
+wait "$previous_monitor" 2>/dev/null || true
+monitor_recovered() {
+  MONITOR_PID="$(T show -gqv @agent_monitor_pid)"
+  [ "$MONITOR_PID" != "$previous_monitor" ] && kill -0 "$MONITOR_PID" 2>/dev/null
+}
+wait_for 13000 "listener never recovered the dead monitor" monitor_recovered
+pass "listener recovered discovery after an abrupt monitor exit"
+painter_stopped() {
+  ! kill -0 "$previous_painter" 2>/dev/null && ! kill -0 "$previous_painter_client" 2>/dev/null
+}
+wait_for 5000 "old painter survived monitor recovery" painter_stopped
+pass "recovery stopped the previous painter and its control client"
 
 printf 'ALL TESTS PASSED\n'

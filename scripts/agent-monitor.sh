@@ -180,6 +180,10 @@ owns_lock() {
 }
 
 acquire_lock
+# The listener can recover discovery after a monitor exits. Keep the last
+# owner published on exit so it can distinguish a stopped monitor from a
+# standalone listener; @agent_status_start=off disables recovery.
+tmux set-option -g @agent_monitor_pid "$$" 2>/dev/null
 trap cleanup_lock EXIT
 trap 'exit 143' TERM # SIGTERM must run the EXIT trap (kills the pulse child)
 trap 'exit 130' INT
@@ -507,7 +511,6 @@ if [ "${AGENT_MONITOR_SELFTEST:-}" = window-label ]; then
   exit 0
 fi
 
-# --- window-list wrap ------------------------------------------------------
 # The monitor owns the status lines with self-contained formats (never unset:
 # clearing an array option element blanks the bar). Windows are split into
 # contiguous rows, expanding up to tmux's supported status-line limit. Window
@@ -639,7 +642,6 @@ compute_wrap() {
   [ "${#cutoffs[@]}" -gt 0 ] || cutoffs=(99999)
   apply_wrap "${cutoffs[@]}"
 }
-# ---------------------------------------------------------------------------
 
 clear_pane() {
   tmux set-option -p -t "$1" -u @agent_icon 2>/dev/null
@@ -793,7 +795,7 @@ pulse=(236 239 242 245 248 250 248 245 242 239)
 # re-checks busy-ness and the client list about once a second and renders
 # frames in between.
 pulse_loop() {
-  local i=0 pulsing=0 busy tty socket fifo cm_pid frame
+  local i=0 pulsing=0 busy tty flags socket fifo cm_pid frame panes
   local -a ttys
   socket="$(tmux display -p '#{socket_path}' 2>/dev/null)"
   [ -n "$socket" ] || return
@@ -808,14 +810,16 @@ pulse_loop() {
   rm -f "$fifo"
   trap 'kill "$cm_pid" 2>/dev/null' EXIT
   trap 'exit 143' TERM # the monitor stops us with TERM; the client must die too
-  while :; do
-    tmux has-session 2>/dev/null || break
-    busy="$(tmux list-panes -a -F '#{?#{@agent_icon},#{@agent_ready},}' 2>/dev/null | grep -cx 0)"
+  # SIGKILL cannot run the monitor's cleanup trap. Its painter must notice
+  # the dead parent or a replacement owner and close its control client.
+  while kill -0 "$$" 2>/dev/null && owns_lock; do
+    panes="$(tmux list-panes -a -F '#{?#{@agent_icon},#{@agent_ready},}' 2>/dev/null)" || break
+    busy="$(printf '%s\n' "$panes" | grep -cx 0)"
     ttys=()
-    while read -r tty; do
-      [ -n "$tty" ] && ttys+=("$tty")
-    done < <(tmux list-clients -F '#{client_tty}' 2>/dev/null)
-    if [ "$busy" -gt 0 ]; then
+    while IFS='|' read -r flags tty; do
+      visible_client "$flags" "$tty" && ttys+=("$tty")
+    done < <(tmux list-clients -F '#{client_flags}|#{client_tty}' 2>/dev/null)
+    if [ "$busy" -gt 0 ] && [ "${#ttys[@]}" -gt 0 ]; then
       pulsing=1
       for _ in 1 2 3 4 5; do # ~1s of frames between busy re-checks
         i=$(((i + 1) % ${#pulse[@]}))
@@ -835,7 +839,7 @@ pulse_loop() {
         done
         printf '%s' "$frame" >&8 || return
       fi
-      sleep 0.5
+      sleep 1
     fi
   done
 }

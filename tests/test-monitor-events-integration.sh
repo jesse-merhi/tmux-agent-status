@@ -13,6 +13,7 @@ SCRIPTS="$(cd "$(dirname "$0")/../scripts" && pwd)"
 MONITOR_PIDFILE="/tmp/test-agent-monitor-$$.pid"
 EVENTS_PIDFILE="/tmp/test-agent-events-$$.pid"
 MONITOR_PID=""
+SECOND_MONITOR_PID=""
 
 T() { command tmux -L "$SOCK" "$@"; }
 
@@ -33,6 +34,7 @@ send_keys() {
 cleanup() {
   [ -f "$MONITOR_PIDFILE" ] && kill "$(cat "$MONITOR_PIDFILE")" 2>/dev/null
   [ -n "$MONITOR_PID" ] && kill "$MONITOR_PID" 2>/dev/null
+  [ -n "$SECOND_MONITOR_PID" ] && kill "$SECOND_MONITOR_PID" 2>/dev/null
   [ -f "$EVENTS_PIDFILE" ] && kill "$(cat "$EVENTS_PIDFILE")" 2>/dev/null
   T kill-server 2>/dev/null
   rm -f "$MONITOR_PIDFILE" "$EVENTS_PIDFILE"
@@ -151,10 +153,8 @@ TMUX="$socket_path,0,0" \
   AGENT_EVENTS_PIDFILE="$EVENTS_PIDFILE" \
   "$SCRIPTS/agent-monitor.sh" >/dev/null 2>&1 &
 SECOND_MONITOR_PID=$!
-sleep 0.5
-if kill -0 "$SECOND_MONITOR_PID" 2>/dev/null; then
-  fail "duplicate monitor stayed alive"
-fi
+monitor_exited() { ! kill -0 "$1" 2>/dev/null; }
+wait_for 5000 "duplicate monitor stayed alive" monitor_exited "$SECOND_MONITOR_PID"
 wait "$SECOND_MONITOR_PID" 2>/dev/null || true
 [ "$(cat "$MONITOR_PIDFILE" 2>/dev/null)" = "$MONITOR_PID" ] ||
   fail "duplicate monitor overwrote pidfile"

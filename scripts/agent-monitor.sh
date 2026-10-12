@@ -134,13 +134,6 @@ visible_client() { # client_flags client_tty
   [ -n "${2:-}" ]
 }
 
-if [ "${AGENT_MONITOR_SELFTEST:-}" = visible-clients ]; then
-  while IFS='|' read -r flags tty width; do
-    visible_client "$flags" "$tty" && printf '%s\n' "$width"
-  done
-  exit 0
-fi
-
 pidfile="${AGENT_MONITOR_PIDFILE:-/tmp/tmux-agent-monitor-$(id -u)-${server_key:-default}.pid}"
 lockdir="${AGENT_MONITOR_LOCKDIR:-${pidfile}.lock}"
 

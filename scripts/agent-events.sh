@@ -97,6 +97,7 @@ cleanup() {
   if [ "$(pidfile_owner)" = "$$" ]; then
     rm -f "$pidfile"
   fi
+  exec 9>&- 2>/dev/null || true
   [ -n "$in_fifo" ] && rm -f "$in_fifo"
 }
 trap cleanup EXIT
@@ -135,13 +136,17 @@ unlock_claim
 
 in_fifo="$(mktemp -u "${TMPDIR:-/tmp}/agent-events-XXXXXX")"
 mkfifo "$in_fifo" || exit 1
+# Open both ends before forking so concurrent listener launches cannot strand
+# the elected owner while its reader and writer wait for each other.
+exec 9<>"$in_fifo" || exit 1
 
 now_ms() {
   local t="${EPOCHREALTIME/./}"
   printf '%s' "${t:0:13}"
 }
 
-declare -A agents last_out state win_start win_count hook_ts inputs ready_since pending_recheck
+declare -A agents last_out state win_start win_count hook_ts inputs ready_since pending_recheck marker_checked
+last_monitor_start=0
 
 has_running_tasks() { # session_id
   local sid="$1" path lsof_cmd
@@ -196,9 +201,11 @@ seed_agents() { # initial scan; control-mode notifications keep it fresh after
 }
 
 resync_agents() { # now_ms — subscription safety net for panes/windows created while listener lives
-  local pane icon ready ts ni now="$1"
+  local pane icon ready ts ni monitor_pid start owner="" start_setting="" now="$1"
   local -A seen=()
-  while IFS='|' read -r pane icon ready ts ni; do
+  while IFS='|' read -r pane icon ready ts ni monitor_pid start; do
+    owner="$monitor_pid"
+    start_setting="$start"
     [ -n "$icon" ] || continue
     seen[$pane]=1
     if [ -z "${agents[$pane]:-}" ]; then
@@ -214,11 +221,16 @@ resync_agents() { # now_ms — subscription safety net for panes/windows created
       ready_since[$pane]="$now"
     fi
   done < <(tmx list-panes -s -t "$SESSION" \
-    -F '#{pane_id}|#{@agent_icon}|#{@agent_ready}|#{@agent_state_ts}|#{@agent_inputs}' 2>/dev/null)
+    -F '#{pane_id}|#{@agent_icon}|#{@agent_ready}|#{@agent_state_ts}|#{@agent_inputs}|#{@agent_monitor_pid}|#{@agent_status_start}' 2>/dev/null)
 
   for pane in "${!agents[@]}"; do
     [ -n "${seen[$pane]:-}" ] || forget_pane "$pane"
   done
+  if [[ "$owner" =~ ^[0-9]+$ ]] && ! listener_alive "$owner" &&
+    [ "$start_setting" != off ] && [ $((now - last_monitor_start)) -ge 10000 ]; then
+    last_monitor_start="$now"
+    TMUX="$socket_path,0,0" nohup "${BASH_SOURCE[0]%/*}/agent-monitor.sh" >/dev/null 2>&1 &
+  fi
 }
 
 # A ready->busy transition after a real ready spell means the user just
@@ -240,7 +252,7 @@ set_ready() { # pane value
 forget_pane() {
   unset "agents[$1]" "last_out[$1]" "state[$1]" "win_start[$1]" \
     "win_count[$1]" "hook_ts[$1]" "inputs[$1]" "ready_since[$1]" \
-    "pending_recheck[$1]" 2>/dev/null
+    "pending_recheck[$1]" "marker_checked[$1]" 2>/dev/null
 }
 
 in_hook_grace() { # pane — agent-attention.sh hooks win for HOOK_GRACE secs
@@ -253,7 +265,7 @@ in_hook_grace() { # pane — agent-attention.sh hooks win for HOOK_GRACE secs
     ts="$live"
     hook_ts[$pane]="$live"
   fi
-  [ "$ts" -gt 0 ] 2>/dev/null && [ $(($(date +%s) - ts)) -lt "$HOOK_GRACE" ]
+  [ "$ts" -gt 0 ] 2>/dev/null && [ $((EPOCHSECONDS - ts)) -lt "$HOOK_GRACE" ]
 }
 
 on_output() { # pane now_ms
@@ -284,6 +296,15 @@ on_output() { # pane now_ms
 sweep_ready() { # now_ms — flip long-silent agent panes ready
   local pane pending now="$1"
   for pane in "${!agents[@]}"; do
+    # Output already drives busy transitions. Inspect the screen only after
+    # silence, and leave an unchanged ready screen alone after one check.
+    [ $((now - ${last_out[$pane]:-0})) -ge $((READY_AGE * 1000)) ] || continue
+    if [ "${state[$pane]:-}" = 1 ] &&
+      [ "${marker_checked[$pane]:-0}" -ge "${last_out[$pane]:-0}" ]; then
+      continue
+    fi
+    [ $((now - ${marker_checked[$pane]:-0})) -ge 1000 ] || continue
+    marker_checked[$pane]="$now"
     if pane_busy_marker "$pane"; then
       if [ "${state[$pane]:-}" != 0 ]; then
         in_hook_grace "$pane" || set_ready "$pane" 0
@@ -292,24 +313,22 @@ sweep_ready() { # now_ms — flip long-silent agent panes ready
       continue
     fi
     [ "${state[$pane]:-}" = 1 ] && continue
-    if [ $((now - ${last_out[$pane]:-0})) -ge $((READY_AGE * 1000)) ]; then
-      in_hook_grace "$pane" && continue
-      pending="$(tmx display -p -t "$pane" '#{@agent_pending}' 2>/dev/null)"
-      if [ -n "$pending" ]; then
-        if [[ "$pending" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
-          if [ $((now - ${pending_recheck[$pane]:-0})) -lt $((PENDING_RECHECK * 1000)) ]; then
-            continue
-          fi
-          pending_recheck[$pane]="$now"
-          has_running_tasks "$pending" && continue
-          tmx set-option -p -t "$pane" -u @agent_pending 2>/dev/null || continue
-        else
-          continue # unknown session: only a lifecycle hook can safely clear it
+    in_hook_grace "$pane" && continue
+    pending="$(tmx display -p -t "$pane" '#{@agent_pending}' 2>/dev/null)"
+    if [ -n "$pending" ]; then
+      if [[ "$pending" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+        if [ $((now - ${pending_recheck[$pane]:-0})) -lt $((PENDING_RECHECK * 1000)) ]; then
+          continue
         fi
+        pending_recheck[$pane]="$now"
+        has_running_tasks "$pending" && continue
+        tmx set-option -p -t "$pane" -u @agent_pending 2>/dev/null || continue
+      else
+        continue # unknown session: only a lifecycle hook can safely clear it
       fi
-      set_ready "$pane" 1
-      ready_since[$pane]="$now"
     fi
+    set_ready "$pane" 1
+    ready_since[$pane]="$now"
   done
 }
 
@@ -320,8 +339,7 @@ control_stdin() {
   # Quoted: # would otherwise start a tmux command-line comment.
   printf "refresh-client -B 'icons:%%*:#{@agent_icon}'\n"
   printf "refresh-client -B 'hooks:%%*:#{@agent_state_ts}'\n"
-  # Keep the fifo's write end open so the client never sees EOF.
-  exec 3>"$in_fifo"
+  # Stay alive with the listener; descriptor 9 keeps the client from seeing EOF.
   while kill -0 "$$" 2>/dev/null; do sleep 5; done
 }
 
@@ -359,7 +377,7 @@ on_subscription() { # name pane value(may be empty)
 start_ms="$(now_ms)"
 seed_agents "$start_ms"
 
-control_stdin >"$in_fifo" &
+control_stdin >&9 &
 stdin_pid=$!
 trap 'cleanup; kill "$stdin_pid" 2>/dev/null' EXIT
 
@@ -369,7 +387,7 @@ socket_path="$(tmx display -p '#{socket_path}' 2>/dev/null)"
 [ -n "$socket_path" ] || exit 0
 exec 4< <(
   unset TMUX TMUX_PANE
-  command tmux -S "$socket_path" -C attach -t "$SESSION" -f read-only,ignore-size <"$in_fifo" 2>/dev/null
+  command tmux -S "$socket_path" -C attach -t "$SESSION" -f read-only,ignore-size <&9 2>/dev/null
 )
 # A control client does not exit on stdin EOF: kill it explicitly or it
 # outlives us and the server buffers the whole event stream for a client
